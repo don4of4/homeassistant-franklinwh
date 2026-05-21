@@ -7,6 +7,6 @@
   "iot_class": "cloud_polling",
   "integration_type": "hub",
   "requirements": ["franklinwh@git+https://github.com/richo/franklinwh-python.git@next"],
-  "version": "0.5.0",
+  "version": "2026.4.0",
   "issue_tracker": "https://github.com/richo/homeassistant-franklinwh/issues"
 }
