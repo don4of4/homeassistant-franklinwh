@@ -217,13 +217,54 @@ class ReserveSOCNumber(RestoreEntity, NumberEntity):
         self._value: float = 20.0
 
     async def async_added_to_hass(self) -> None:
-        """Restore previous value on startup."""
+        """Restore previous value on startup.
+
+        Priority:
+        1. Restore from HA state (previous session — most reliable)
+        2. Read from device via _switch_status() (first install — best guess)
+        3. Fall back to 20% (safe default)
+
+        On first install, the device value is the best we can do. The TOU
+        schedule reserve may differ from the mode-level SOC fields, so we
+        log a warning to prompt the user to verify.
+        """
         await super().async_added_to_hass()
+
+        # Priority 1: restore from previous HA session
         last_state = await self.async_get_last_state()
         if last_state and last_state.state not in (None, "unknown", "unavailable"):
             self._value = float(last_state.state)
+            _LOGGER.debug("Restored FranklinWH reserve SOC from HA state: %s%%", self._value)
+        else:
+            # Priority 2: read from device (first install)
+            client = self.hass.data.get(DOMAIN, {}).get(
+                f"client_{self._attr_unique_id.replace('_reserve_soc', '')}"
+            )
+            if client:
+                try:
+                    sw = await client._switch_status()
+                    # Read the reserve for the currently active mode
+                    for key in ("touMinSoc", "selfMinSoc", "backupMaxSoc"):
+                        val = sw.get(key)
+                        if val is not None and val != 20:
+                            # Found a non-default reserve — likely user-configured
+                            self._value = float(val)
+                            _LOGGER.info(
+                                "Read initial reserve SOC from device: %s%% (%s). "
+                                "Verify this matches your Franklin app settings.",
+                                val, key,
+                            )
+                            break
+                    else:
+                        _LOGGER.warning(
+                            "FranklinWH reserve SOC defaulting to 20%%. "
+                            "Set this to match your Franklin app Power Reserve "
+                            "before switching modes via HA."
+                        )
+                except Exception:  # noqa: BLE001
+                    _LOGGER.debug("Could not read reserve from device, using default 20%%")
+
         self.hass.data.setdefault(DOMAIN, {})["reserve_soc_override"] = int(self._value)
-        _LOGGER.debug("Restored FranklinWH reserve SOC: %s%%", self._value)
 
     @property
     def available(self) -> bool:
