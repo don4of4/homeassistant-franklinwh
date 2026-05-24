@@ -40,7 +40,14 @@ from homeassistant.helpers.update_coordinator import (
     UpdateFailed,
 )
 
-from . import DOMAIN, get_shared_client, set_shared_coordinator
+from . import (
+    DOMAIN,
+    check_rate_limit,
+    clear_rate_limit,
+    get_shared_client,
+    handle_rate_limit,
+    set_shared_coordinator,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -222,24 +229,31 @@ async def async_setup_platform(
     client = get_shared_client(hass, username, password, gateway)
 
     async def _update_data() -> dict:
+        # Circuit breaker: skip API call if we're in a backoff period
+        check_rate_limit(hass)
         try:
             operating_mode, reserve_soc = await _read_operating_mode(client)
             export_mode, export_limit_kw = await _read_export_settings(client)
+            clear_rate_limit(hass)  # Successful — reset backoff
             return {
                 "operating_mode": operating_mode,
                 "reserve_soc": reserve_soc,
                 "export_mode": export_mode,
                 "export_limit_kw": export_limit_kw,
             }
+        except franklinwh.client.AccountLockedException as err:
+            handle_rate_limit(hass)
+            raise UpdateFailed(f"Account locked / rate limited: {err}") from err
         except franklinwh.client.DeviceTimeoutException as err:
             raise UpdateFailed(f"Device timeout: {err}") from err
         except franklinwh.client.GatewayOfflineException as err:
             raise UpdateFailed(f"Gateway offline: {err}") from err
-        except franklinwh.client.AccountLockedException as err:
-            raise UpdateFailed(f"Account locked: {err}") from err
         except franklinwh.client.InvalidCredentialsException as err:
             raise UpdateFailed(f"Invalid credentials: {err}") from err
         except Exception as err:
+            # Check for code 181 in the error message
+            if "181" in str(err):
+                handle_rate_limit(hass)
             raise UpdateFailed(
                 f"Error fetching FranklinWH mode/export status: {err}"
             ) from err

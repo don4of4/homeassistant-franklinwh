@@ -3,17 +3,68 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 import franklinwh
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.typing import ConfigType
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 _LOGGER = logging.getLogger(__name__)
 
 DOMAIN = "franklin_wh"
+
+# Rate limit circuit breaker: when the API returns code 181, stop all
+# requests for an exponentially increasing backoff period.  This prevents
+# HA's 30-60s retry loops from prolonging an account lockout.
+_RATE_LIMIT_KEY = "rate_limit_until"
+_RATE_LIMIT_BACKOFF_KEY = "rate_limit_backoff"
+_INITIAL_BACKOFF_SECONDS = 120  # 2 minutes
+_MAX_BACKOFF_SECONDS = 1800  # 30 minutes
+
+
+def check_rate_limit(hass: HomeAssistant) -> None:
+    """Raise UpdateFailed if we're in a rate-limit backoff period.
+
+    Call this at the top of every coordinator _update_data() function.
+    """
+    data = hass.data.get(DOMAIN, {})
+    until = data.get(_RATE_LIMIT_KEY, 0)
+    if time.time() < until:
+        remaining = int(until - time.time())
+        raise UpdateFailed(
+            f"FranklinWH API rate limited — backing off for {remaining}s. "
+            f"Check the Franklin app if this persists."
+        )
+
+
+def handle_rate_limit(hass: HomeAssistant) -> None:
+    """Activate the rate-limit circuit breaker with exponential backoff.
+
+    Call this when any API call returns code 181 or AccountLockedException.
+    """
+    hass.data.setdefault(DOMAIN, {})
+    current_backoff = hass.data[DOMAIN].get(_RATE_LIMIT_BACKOFF_KEY, _INITIAL_BACKOFF_SECONDS)
+    hass.data[DOMAIN][_RATE_LIMIT_KEY] = time.time() + current_backoff
+    hass.data[DOMAIN][_RATE_LIMIT_BACKOFF_KEY] = min(current_backoff * 2, _MAX_BACKOFF_SECONDS)
+    _LOGGER.warning(
+        "FranklinWH API rate limited (code 181). "
+        "Pausing ALL API calls for %s seconds to let the lockout expire. "
+        "Next backoff will be %ss if it happens again.",
+        current_backoff,
+        min(current_backoff * 2, _MAX_BACKOFF_SECONDS),
+    )
+
+
+def clear_rate_limit(hass: HomeAssistant) -> None:
+    """Reset the backoff after a successful API call."""
+    data = hass.data.get(DOMAIN, {})
+    if _RATE_LIMIT_KEY in data:
+        _LOGGER.info("FranklinWH API recovered from rate limit")
+        data.pop(_RATE_LIMIT_KEY, None)
+        data[_RATE_LIMIT_BACKOFF_KEY] = _INITIAL_BACKOFF_SECONDS
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:

@@ -41,7 +41,15 @@ from homeassistant.helpers.update_coordinator import (
     UpdateFailed,
 )
 
-from . import DOMAIN, get_shared_client, get_shared_coordinator, set_shared_coordinator
+from . import (
+    DOMAIN,
+    check_rate_limit,
+    clear_rate_limit,
+    get_shared_client,
+    get_shared_coordinator,
+    handle_rate_limit,
+    set_shared_coordinator,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -88,21 +96,26 @@ async def async_setup_platform(
         )
 
         async def _update_data() -> dict:
+            check_rate_limit(hass)
             try:
                 settings = await client.get_export_settings()
+                clear_rate_limit(hass)
                 return {
                     "export_mode": settings.mode.name.lower(),
                     "export_limit_kw": settings.limit_kw,
                 }
+            except franklinwh.client.AccountLockedException as err:
+                handle_rate_limit(hass)
+                raise UpdateFailed(f"Account locked / rate limited: {err}") from err
             except franklinwh.client.DeviceTimeoutException as err:
                 raise UpdateFailed(f"Device timeout: {err}") from err
             except franklinwh.client.GatewayOfflineException as err:
                 raise UpdateFailed(f"Gateway offline: {err}") from err
-            except franklinwh.client.AccountLockedException as err:
-                raise UpdateFailed(f"Account locked: {err}") from err
             except franklinwh.client.InvalidCredentialsException as err:
                 raise UpdateFailed(f"Invalid credentials: {err}") from err
             except Exception as err:
+                if "181" in str(err):
+                    handle_rate_limit(hass)
                 raise UpdateFailed(
                     f"Error fetching FranklinWH export settings: {err}"
                 ) from err
