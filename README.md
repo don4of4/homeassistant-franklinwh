@@ -2,7 +2,7 @@
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-blue.svg?style=for-the-badge)](https://github.com/hacs/integration)
 
-This is a custom integration for [Home Assistant](https://www.home-assistant.io/) that provides monitoring for FranklinWH home energy storage systems.
+This is a custom integration for [Home Assistant](https://www.home-assistant.io/) that provides monitoring and control for FranklinWH home energy storage systems.
 
 > ⚠️ This project is unofficial and not affiliated with FranklinWH.
 
@@ -10,12 +10,15 @@ This is a custom integration for [Home Assistant](https://www.home-assistant.io/
 
 ## Features
 
+### Local Modbus TCP (Recommended)
+- **26-60ms response times** — reads data directly from the aGate on your LAN
+- **No cloud dependency** — works during internet outages and API lockouts
+- Auto-detects gateway model, serial, and firmware during setup
+- 13 real-time sensor entities (see table below)
+
+### Cloud API
 - Live battery status (SoC, charging/discharging)
-- Solar production and energy generation
-- Grid import/export monitoring
-- Generator and home load insights
-- Switch load and usage tracking
-- Support for V2L (Vehicle-to-Load) data
+- Solar production, grid import/export, generator, home load, switch loads, V2L
 - **Operating mode control** (Self Consumption / Time of Use / Emergency Backup)
 - **Grid export mode control** (Solar Only / Solar + Battery / No Export)
 - **Grid export power limit** (kW cap on grid feed)
@@ -28,30 +31,107 @@ This is a custom integration for [Home Assistant](https://www.home-assistant.io/
 
 1. In Home Assistant, go to **HACS → Integrations**.
 2. Click the menu (⋮) → **Custom repositories**.
-3. Add this repository URL: https://github.com/richo/homeassistant-franklinwh.git
+3. Add this repository URL: `https://github.com/don4of4/homeassistant-franklinwh`
 4. Choose category **Integration** and click **Add**.
 5. Install the **FranklinWH** integration from the list.
 6. Restart Home Assistant.
 
-### Manual Installation (Advanced)
+### Manual Installation
 
 1. Download this repository as a ZIP.
-2. Extract it to your Home Assistant `custom_components/franklin_wh/` directory.
+2. Extract to your Home Assistant `custom_components/franklin_wh/` directory.
 3. Restart Home Assistant.
 
 ---
 
-## Configuration
+## Setup
 
-This integration currently requires **manual YAML configuration** in your `configuration.yaml` file.
+### UI Setup (Config Flow)
 
-> 💡 For security, store your password in `secrets.yaml` instead of writing it directly in your config.
-> 🔎 You can find your Gateway ID / Serial Number in the FranklinWH mobile app under:
-> **Settings → Device Info → SN**
+1. Go to **Settings → Devices & Services → Add Integration**
+2. Search for **FranklinWH**
+3. Choose your connection type:
 
-### Configuration Example
+#### Local (Modbus TCP) — Recommended
+- Enter the IP address of your aGate
+- The integration auto-detects your gateway and creates sensors
+- **Prerequisite:** Modbus TCP must be enabled on your aGate. In the FranklinWH app, enable the **SPAN panel toggle** (no SPAN hardware required — this just enables the Modbus TCP listener on port 502).
+
+#### Cloud API
+- Enter your FranklinWH account email, password, and Gateway ID
+- Gateway ID is found in the FranklinWH app: **Settings → Device Info → SN**
+
+### YAML Configuration (Legacy)
+
+YAML configuration is still supported for backwards compatibility. See [YAML Configuration](#yaml-configuration-legacy-1) below.
+
+---
+
+## Modbus Sensor Entities
+
+These sensors are available when using the Local (Modbus) connection:
+
+| Entity | Description | Unit |
+|--------|-------------|------|
+| FranklinWH Battery SOC | Battery state of charge | % |
+| FranklinWH Grid Power | Grid import (+) / export (-) | kW |
+| FranklinWH Home Power | Home consumption | kW |
+| FranklinWH Battery Power | Battery charge (-) / discharge (+) | kW |
+| FranklinWH Solar Power | Solar production | kW |
+| FranklinWH Grid Voltage | Grid voltage | V |
+| FranklinWH Grid Frequency | Grid frequency | Hz |
+| FranklinWH Ambient Temperature | Outdoor / ambient temp | °C |
+| FranklinWH Cabinet Temperature | Internal cabinet temp | °C |
+| FranklinWH Grid Status | Grid connection (Connected / Disconnected) | — |
+| FranklinWH Operating Mode (Local) | Current mode (TOU / SC / EB) | — |
+| FranklinWH Reserve SOC (Local) | Active reserve setting | % |
+| FranklinWH Battery DC Voltage | Battery DC bus voltage | V |
+
+### Modbus Register Sources
+
+Register mappings are based on the SunSpec 700-series DER models and FranklinWH vendor extension registers, validated by the [mtnears/FranklinWH-Automation](https://github.com/mtnears/FranklinWH-Automation) project against ~300,000 readings.
+
+| Source | Registers | Data |
+|--------|-----------|------|
+| Model 713 (addr 1035) | SOC, battery DC voltage | Battery status |
+| Model 714 (addr 1048) | Battery charge/discharge watts | Battery power |
+| Model 701 (addr 72) | Grid power, voltage, frequency, temps | AC measurements |
+| Extended (addr 15500+) | Solar, home load, mode, reserve | Vendor-specific |
+
+---
+
+## Cloud API Entities
+
+These entities are available when using the Cloud API connection:
+
+| Entity | Description | Unit |
+|--------|-------------|------|
+| FranklinWH State of Charge | Battery state of charge | % |
+| FranklinWH Battery Use | Battery charging/discharging rate | kW |
+| FranklinWH Battery Charge | Total energy charged to battery | kWh |
+| FranklinWH Battery Discharge | Total energy discharged from battery | kWh |
+| FranklinWH Home Load | Instantaneous home power use | kW |
+| FranklinWH Home Use | Total energy consumed by home | kWh |
+| FranklinWH Grid Use | Net grid power usage | kW |
+| FranklinWH Grid Import | Total energy imported from grid | kWh |
+| FranklinWH Grid Export | Total energy exported to grid | kWh |
+| FranklinWH Solar Production | Instantaneous solar power | kW |
+| FranklinWH Solar Energy | Total solar energy produced | kWh |
+| FranklinWH Generator Use | Generator power output | kW |
+| FranklinWH Switch 1/2 Load | Power draw on smart relays | W |
+| FranklinWH V2L Use/Import/Export | Vehicle-to-Load data | W/Wh |
+| FranklinWH Operating Mode | Select operating mode | — |
+| FranklinWH Export Mode | Select grid export mode | — |
+| FranklinWH Export Limit | Grid export power cap | kW |
+
+---
+
+## YAML Configuration (Legacy)
+
+> 💡 For security, store your password in `secrets.yaml`.
 
 ```yaml
+# Cloud API sensors
 sensor:
   - platform: franklin_wh
     username: "email@domain.com"
@@ -59,6 +139,13 @@ sensor:
     id: "100xxxxxxxxxxxx"
     tolerate_stale_data: true
 
+# OR: Local Modbus sensors (no cloud credentials needed)
+sensor:
+  - platform: franklin_wh
+    host: "192.168.1.100"
+    id: "100xxxxxxxxxxxx"
+
+# Operating mode + export control (cloud API required)
 select:
   - platform: franklin_wh
     username: "email@domain.com"
@@ -73,145 +160,24 @@ number:
     max_export_kw: 10.0
 ```
 
-The `select` platform adds operating mode and export mode controls. The `number` platform adds the export power limit slider. Both are optional — omit them if you only need monitoring.
+---
 
-The `tolerate_stale_data` key is not required, but is recommended. The
-FranklinWH API often fails to return valid data, that flag will persist the
-last good data until it's able to fetch more, substantially smoothing out the
-graphs. However, if accuracy is more important to you than consistency, you
-should not enable that flag.
+## Troubleshooting
 
-### Smart Relays
+- **Modbus: "Cannot connect"** — Verify the aGate IP and that Modbus is enabled (Franklin app → SPAN toggle).
+- **Cloud: No entities appear** — Confirm username, password, and gateway ID. Check that FranklinWH cloud services are online.
+- **Rate limited (code 181)** — The integration has automatic exponential backoff. Wait 2-30 minutes for it to recover.
+- **Logs** — Check Settings → System → Logs for errors containing `franklin_wh`.
 
-The integration can also manage smart relays, if you have them installed in your gateway. It is
-vitally important not to enable this feature if you do not have them physically present in your
-installation, as well as to ensure that the configuration here matches your configuration.
+---
 
-FranklinWH supports combining relays, which is why the `switches` parameter is an array- if you have
-multiple switches ganged together, include both of their indexes.
+## Contributing
 
-An example:
+Contributions are welcome! Please fork and open a pull request.
 
-```yaml
-switch:
-  - platform: franklin_wh
-    username: "email@domain.com"
-    password: !secret franklinwh_password
-    id: "100xxxxxxxxxxxx"
-    switches: [3]
-    name: "FWH switch1"
+- Upstream: [richo/homeassistant-franklinwh](https://github.com/richo/homeassistant-franklinwh)
+- This fork: [don4of4/homeassistant-franklinwh](https://github.com/don4of4/homeassistant-franklinwh)
 
-  - platform: franklin_wh
-    username: "email@domain.com"
-    password: !secret franklinwh_password
-    id: "100xxxxxxxxxxxx"
-    switches: [1, 2]
-    name: "FWH switch2"
-```
+## License
 
-### Operating Mode and Export Control
-
-The integration can control the FranklinWH operating mode and grid export settings. These are polled every 5 minutes by default (modes change rarely).
-
-```yaml
-select:
-  - platform: franklin_wh
-    username: "email@domain.com"
-    password: !secret franklinwh_password
-    id: "100xxxxxxxxxxxx"
-
-number:
-  - platform: franklin_wh
-    username: "email@domain.com"
-    password: !secret franklinwh_password
-    id: "100xxxxxxxxxxxx"
-    max_export_kw: 10.0
-```
-
-This creates three entities:
-- **FranklinWH Operating Mode** — select between `self_consumption`, `time_of_use`, and `emergency_backup`. The current reserve SOC is read from the device and preserved when changing modes.
-- **FranklinWH Export Mode** — select between `solar_only`, `solar_and_apower`, and `no_export`. The current power limit is preserved when changing export mode.
-- **FranklinWH Export Limit** — set the maximum export power in kW. Setting to the configured maximum is treated as unlimited.
-
-> ⚠️ Grid export control requires your utility and FranklinWH plan to support grid export. Check the FranklinWH app before enabling `solar_and_apower`.
-
-> ℹ️ The FranklinWH API does not push updates to Home Assistant. Changes made in the FranklinWH app will be reflected in HA on the next poll cycle — up to 5 minutes by default. Lower `update_interval` in your config if you need faster sync.
-
-After updating your configuration, restart Home Assistant to apply the changes.
-
-### Advanced Configuration
-
-| Configuration Option         | Unit   | Description                                                               | sensor | switch | select | number |
-| ---------------------------- | ------ | --------------------------------------------------------------------------| ------ | ------ | ------ | ------ |
-| `use_sn`                     | bool   | Use the gateway's SN as a prefix when creating entities                   |  ✅    |   ✅   |   ✅   |   ✅   |
-| `prefix`                     | string | Specify a prefix to be used when creating entities                        |  ✅    |   ✅   |   ✅   |   ✅   |
-| `update_interval`            | time   | Update period. Default 30s (sensor/switch); 300s (select/number)          |  ✅    |   ✅   |   ✅   |   ✅   |
-| `tolerate_stale_data`        | bool   | Show stale data for one cycle instead of marking the sensor unavailable   |  ✅    |        |        |        |
-| `max_export_kw`              | float  | Maximum value (kW) for the export limit slider. Default 10.0              |        |        |        |   ✅   |
-
-
-## Available Entities
-
-| Entity Name                          | Description                               | Unit      |
-|-------------------------------------|-------------------------------------------|-----------|
-| FranklinWH State of Charge          | Battery state of charge                   | %         |
-| FranklinWH Battery Use              | Battery charging/discharging rate         | kW        |
-| FranklinWH Battery Charge           | Total energy charged to battery           | kWh       |
-| FranklinWH Battery Discharge        | Total energy discharged from battery      | kWh       |
-| FranklinWH Home Load                | Instantaneous home power use              | kW        |
-| FranklinWH Home Use                 | Total energy consumed by home             | kWh       |
-| FranklinWH Grid Use                 | Net grid power usage                      | kW        |
-| FranklinWH Grid Import              | Total energy imported from grid           | kWh       |
-| FranklinWH Grid Export              | Total energy exported to grid             | kWh       |
-| FranklinWH Solar Production         | Instantaneous solar power                 | kW        |
-| FranklinWH Solar Energy             | Total solar energy produced               | kWh       |
-| FranklinWH Generator Use            | Generator power output (live)             | kW        |
-| FranklinWH Generator Energy         | Total generator energy                    | kWh       |
-| FranklinWH Switch 1 Load            | Power draw on Switch 1                    | W         |
-| FranklinWH Switch 1 Lifetime Use    | Total energy used by Switch 1             | Wh        |
-| FranklinWH Switch 2 Load            | Power draw on Switch 2                    | W         |
-| FranklinWH Switch 2 Lifetime Use    | Total energy used by Switch 2             | Wh        |
-| FranklinWH V2L Use                  | Power use via Vehicle-to-Load             | W         |
-| FranklinWH V2L Import               | Total energy drawn from V2L               | Wh        |
-| FranklinWH V2L Export               | Total energy delivered to V2L             | Wh        |
-| FranklinWH Operating Mode           | Select operating mode (select platform)   | —         |
-| FranklinWH Export Mode              | Select grid export mode (select platform) | —         |
-| FranklinWH Export Limit             | Grid export power cap (number platform)   | kW        |
-
-# Flipping sensors
-
-If you want to reverse a sensor, you can create a template sensor:
-
-```yaml
-  - sensor:
-    - name: corrected_battery_use
-      state: >
-        {{ -(states('sensor.franklinwh_battery_use') | float) }}
-      unit_of_measurement: kW
-      state_class: measurement
-      device_class: power
-  - sensor:
-    - name: corrected_grid_use
-      state: >
-        {{ -(states('sensor.franklinwh_grid_use') | float) }}
-      unit_of_measurement: kW
-      state_class: measurement
-      device_class: power
-```
-
-Troubleshooting
-	•	If no entities appear, confirm your username, password, and gateway ID.
-	•	Check that FranklinWH cloud services are online.
-	•	Review logs via Settings → System → Logs for errors containing franklin_wh.
-
-Contributing
-
-Contributions are welcome! Please fork the repository and open a pull request:
-
-👉 https://github.com/richo/homeassistant-franklinwh
-
-License
-
-This project is dual-licensed under the MIT License and the Apache License 2.0.
-
-You may choose either license when using or contributing to this project.
+Dual-licensed under the MIT License and the Apache License 2.0.
