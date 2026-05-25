@@ -89,13 +89,23 @@ def supports_http2() -> bool:
     return False
 
 
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: "ConfigEntry",
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up sensors from a config entry (UI flow)."""
+    from .modbus import async_setup_entry as modbus_setup_entry  # noqa: PLC0415
+    return await modbus_setup_entry(hass, entry, async_add_entities)
+
+
 async def async_setup_platform(
     hass: HomeAssistant,
     config: ConfigType,
     async_add_entities: AddEntitiesCallback,
     discovery_info: DiscoveryInfoType | None = None,
 ) -> None:
-    """Set up the sensor platform.
+    """Set up the sensor platform (YAML).
 
     Dispatches to Modbus or cloud API based on config:
       - If 'host' is set: use local Modbus TCP (no cloud dependency)
