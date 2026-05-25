@@ -79,6 +79,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await hass.config_entries.async_forward_entry_setups(
             entry, PLATFORMS_MODBUS
         )
+    elif conn_type == "both":
+        await hass.config_entries.async_forward_entry_setups(
+            entry, [Platform.SENSOR, Platform.SELECT, Platform.NUMBER]
+        )
     else:
         await hass.config_entries.async_forward_entry_setups(
             entry, PLATFORMS_CLOUD
@@ -90,7 +94,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     conn_type = entry.data.get("connection_type", "cloud")
-    platforms = PLATFORMS_MODBUS if conn_type == "modbus" else PLATFORMS_CLOUD
+    if conn_type == "modbus":
+        platforms = PLATFORMS_MODBUS
+    elif conn_type == "both":
+        platforms = [Platform.SENSOR, Platform.SELECT, Platform.NUMBER]
+    else:
+        platforms = PLATFORMS_CLOUD
     return await hass.config_entries.async_unload_platforms(entry, platforms)
 
 

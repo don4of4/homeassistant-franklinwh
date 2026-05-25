@@ -72,10 +72,10 @@ async def _test_modbus(host: str, port: int) -> dict[str, str] | None:
                 .strip("\x00")
             )
 
-        manufacturer = read_str(2, 16)  # offset 2 in model data (after ID+len)
-        model = read_str(18, 16)
-        version = read_str(42, 8)
-        serial = read_str(50, 16)
+        manufacturer = read_str(0, 16)
+        model = read_str(16, 16)
+        version = read_str(40, 8)
+        serial = read_str(48, 16)
 
         return {
             "manufacturer": manufacturer,
@@ -108,6 +108,9 @@ class FranklinWHConfigFlow(ConfigFlow, domain=DOMAIN):
     def __init__(self) -> None:
         """Initialize."""
         self._modbus_info: dict[str, str] | None = None
+        self._connection_type: str = "modbus"
+        self._modbus_host: str = ""
+        self._modbus_port: int = DEFAULT_PORT
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -116,16 +119,20 @@ class FranklinWHConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             if user_input["connection_type"] == "modbus":
                 return await self.async_step_modbus()
+            if user_input["connection_type"] == "both":
+                self._connection_type = "both"
+                return await self.async_step_modbus()
             return await self.async_step_cloud()
 
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema(
                 {
-                    vol.Required("connection_type", default="modbus"): vol.In(
+                    vol.Required("connection_type", default="both"): vol.In(
                         {
-                            "modbus": "Local (Modbus TCP) — recommended",
-                            "cloud": "Cloud API — for mode switching",
+                            "both": "Local + Cloud (monitoring via Modbus, commands via Cloud API)",
+                            "modbus": "Local only (Modbus TCP — monitoring only, no mode switching)",
+                            "cloud": "Cloud only (all features via cloud API)",
                         }
                     ),
                 }
@@ -152,10 +159,15 @@ class FranklinWHConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors["base"] = "cannot_connect"
             else:
                 self._modbus_info = info
+                self._modbus_host = host
+                self._modbus_port = port
                 serial = info["serial"]
 
                 await self.async_set_unique_id(serial)
                 self._abort_if_unique_id_configured()
+
+                if self._connection_type == "both":
+                    return await self.async_step_cloud()
 
                 return self.async_create_entry(
                     title=f"FranklinWH {info['model']} ({serial[-4:]})",
@@ -199,8 +211,27 @@ class FranklinWHConfigFlow(ConfigFlow, domain=DOMAIN):
             if not valid:
                 errors["base"] = "invalid_auth"
             else:
-                await self.async_set_unique_id(gateway)
-                self._abort_if_unique_id_configured()
+                if self._connection_type != "both":
+                    await self.async_set_unique_id(gateway)
+                    self._abort_if_unique_id_configured()
+
+                if self._connection_type == "both":
+                    info = self._modbus_info or {}
+                    serial = info.get("serial", gateway)
+                    return self.async_create_entry(
+                        title=f"FranklinWH {info.get('model', 'aGate')} ({serial[-4:]})",
+                        data={
+                            "connection_type": "both",
+                            CONF_HOST: self._modbus_host,
+                            CONF_PORT: self._modbus_port,
+                            CONF_USERNAME: username,
+                            CONF_PASSWORD: password,
+                            "gateway_id": gateway,
+                            "serial": serial,
+                            "model": info.get("model", ""),
+                            "firmware": info.get("version", ""),
+                        },
+                    )
 
                 return self.async_create_entry(
                     title=f"FranklinWH Cloud ({gateway[-4:]})",
