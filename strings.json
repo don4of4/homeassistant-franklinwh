@@ -1,0 +1,37 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "FranklinWH Connection",
+        "description": "Local Modbus reads data directly from your aGate (fast, no cloud dependency). Cloud API is needed only for mode switching.",
+        "data": {
+          "connection_type": "Connection type"
+        }
+      },
+      "modbus": {
+        "title": "Modbus TCP Connection",
+        "description": "Enter the IP address of your FranklinWH aGate. Modbus TCP must be enabled (Franklin app → SPAN panel toggle).",
+        "data": {
+          "host": "aGate IP address",
+          "port": "Modbus port"
+        }
+      },
+      "cloud": {
+        "title": "Cloud API Credentials",
+        "description": "Enter your FranklinWH account credentials (same as the mobile app).",
+        "data": {
+          "username": "Email",
+          "password": "Password",
+          "gateway_id": "Gateway ID"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect to aGate — verify IP address and that Modbus is enabled",
+      "invalid_auth": "Invalid credentials or gateway ID"
+    },
+    "abort": {
+      "already_configured": "This device is already configured"
+    }
+  }
+}

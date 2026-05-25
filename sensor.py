@@ -17,8 +17,10 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.const import (
+    CONF_HOST,
     CONF_ID,
     CONF_PASSWORD,
+    CONF_PORT,
     CONF_USERNAME,
     MAJOR_VERSION as HASS_MAJOR_VERSION,
     MINOR_VERSION as HASS_MINOR_VERSION,
@@ -42,15 +44,19 @@ DEFAULT_UPDATE_INTERVAL = 30
 
 PLATFORM_SCHEMA = SENSOR_PLATFORM_SCHEMA.extend(
     {
-        vol.Required(CONF_USERNAME): cv.string,
-        vol.Required(CONF_PASSWORD): cv.string,
-        vol.Required(CONF_ID): cv.string,
+        # Cloud API config (original)
+        vol.Optional(CONF_USERNAME): cv.string,
+        vol.Optional(CONF_PASSWORD): cv.string,
+        vol.Optional(CONF_ID, default=""): cv.string,
         vol.Optional("use_sn", default=False): cv.boolean,
         vol.Optional("prefix", default=False): cv.string,
         vol.Optional(
             "update_interval", default=DEFAULT_UPDATE_INTERVAL
         ): cv.time_period,
         vol.Optional("tolerate_stale_data", default=False): cv.boolean,
+        # Modbus config (new — presence of 'host' triggers Modbus mode)
+        vol.Optional(CONF_HOST): cv.string,
+        vol.Optional(CONF_PORT, default=502): cv.port,
     }
 )
 
@@ -89,7 +95,16 @@ async def async_setup_platform(
     async_add_entities: AddEntitiesCallback,
     discovery_info: DiscoveryInfoType | None = None,
 ) -> None:
-    """Set up the sensor platform."""
+    """Set up the sensor platform.
+
+    Dispatches to Modbus or cloud API based on config:
+      - If 'host' is set: use local Modbus TCP (no cloud dependency)
+      - If 'username' is set: use cloud API (original behavior)
+    """
+    if CONF_HOST in config and config[CONF_HOST]:
+        from .modbus import async_setup_platform as modbus_setup  # noqa: PLC0415
+        return await modbus_setup(hass, config, async_add_entities, discovery_info)
+
     username: str = config[CONF_USERNAME]
     password: str = config[CONF_PASSWORD]
     gateway: str = config[CONF_ID]
