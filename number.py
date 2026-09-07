@@ -19,6 +19,7 @@ from homeassistant.const import (
     CONF_USERNAME,
     UnitOfPower,
 )
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -32,6 +33,7 @@ from homeassistant.helpers.update_coordinator import (
 _LOGGER = logging.getLogger(__name__)
 
 DEFAULT_UPDATE_INTERVAL = 300
+DEFAULT_MAX_EXPORT_KW = 10.0
 
 
 PLATFORM_SCHEMA = NUMBER_PLATFORM_SCHEMA.extend(
@@ -44,7 +46,7 @@ PLATFORM_SCHEMA = NUMBER_PLATFORM_SCHEMA.extend(
         vol.Optional(
             "update_interval", default=DEFAULT_UPDATE_INTERVAL
         ): cv.time_period,
-        vol.Optional("max_export_kw", default=10.0): vol.Coerce(float),
+        vol.Optional("max_export_kw", default=DEFAULT_MAX_EXPORT_KW): vol.Coerce(float),
     }
 )
 
@@ -90,6 +92,51 @@ async def async_setup_platform(
     else:
         prefix = "FranklinWH"
 
+    await _async_add_numbers(
+        hass, async_add_entities, username, password, gateway,
+        prefix, unique_id, update_interval, max_export_kw,
+    )
+
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up cloud-backed numbers from a config entry.
+
+    __init__.py forwards NUMBER only for connection_type "cloud" and "both".
+    max_export_kw is not collected by the config flow, so the platform default
+    is used; it only bounds the slider, not the device.
+    """
+    await _async_add_numbers(
+        hass,
+        async_add_entities,
+        entry.data[CONF_USERNAME],
+        entry.data[CONF_PASSWORD],
+        entry.data.get("gateway_id") or entry.data.get("serial", ""),
+        "FranklinWH",
+        entry.data.get("serial") or None,
+        timedelta(seconds=DEFAULT_UPDATE_INTERVAL),
+        DEFAULT_MAX_EXPORT_KW,
+    )
+
+
+async def _async_add_numbers(
+    hass: HomeAssistant,
+    async_add_entities: AddEntitiesCallback,
+    username: str,
+    password: str,
+    gateway: str,
+    prefix: str,
+    unique_id: str | None,
+    update_interval: timedelta,
+    max_export_kw: float,
+) -> None:
+    """Build the cloud client, coordinator and number entities.
+
+    Shared by the YAML platform and the config entry so the two cannot drift.
+    """
     fetcher = franklinwh.TokenFetcher(username, password)
     client = franklinwh.Client(fetcher, gateway)
 

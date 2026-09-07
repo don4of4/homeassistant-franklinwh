@@ -17,6 +17,7 @@ from homeassistant.const import (
     CONF_PASSWORD,
     CONF_USERNAME,
 )
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -155,6 +156,50 @@ async def async_setup_platform(
     else:
         prefix = "FranklinWH"
 
+    await _async_add_selects(
+        hass, async_add_entities, username, password, gateway,
+        prefix, unique_id, update_interval,
+    )
+
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up cloud-backed selects from a config entry.
+
+    __init__.py forwards SELECT only for connection_type "cloud" and "both",
+    so reaching here always means cloud credentials are present. In "both"
+    mode telemetry comes from Modbus and only these writable controls use the
+    cloud, which is the intended hybrid split.
+    """
+    await _async_add_selects(
+        hass,
+        async_add_entities,
+        entry.data[CONF_USERNAME],
+        entry.data[CONF_PASSWORD],
+        entry.data.get("gateway_id") or entry.data.get("serial", ""),
+        "FranklinWH",
+        entry.data.get("serial") or None,
+        timedelta(seconds=DEFAULT_UPDATE_INTERVAL),
+    )
+
+
+async def _async_add_selects(
+    hass: HomeAssistant,
+    async_add_entities: AddEntitiesCallback,
+    username: str,
+    password: str,
+    gateway: str,
+    prefix: str,
+    unique_id: str | None,
+    update_interval: timedelta,
+) -> None:
+    """Build the cloud client, coordinator and select entities.
+
+    Shared by the YAML platform and the config entry so the two cannot drift.
+    """
     fetcher = franklinwh.TokenFetcher(username, password)
     client = franklinwh.Client(fetcher, gateway)
 
