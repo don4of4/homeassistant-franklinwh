@@ -1,0 +1,7 @@
+
+# Local migration artefacts from the 2026-05-25 cloud->Modbus cutover.
+# These contain the full Home Assistant recorder database and exported
+# history/statistics for a private home. NEVER commit — this repo is public.
+ha_db_backup_*.db
+history_export_*.json
+statistics_export_*.json

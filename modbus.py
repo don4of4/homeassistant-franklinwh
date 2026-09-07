@@ -370,7 +370,7 @@ class ModbusGridPowerSensor(ModbusSensor):
     _data_key = "grid_power"
 
     def __init__(self, coordinator, prefix, uid) -> None:
-        super().__init__(coordinator, prefix, uid, "Grid Power")
+        super().__init__(coordinator, prefix, uid, "Grid Use")
 
 
 class ModbusHomePowerSensor(ModbusSensor):
@@ -396,7 +396,7 @@ class ModbusBatteryPowerSensor(ModbusSensor):
     _data_key = "battery_power"
 
     def __init__(self, coordinator, prefix, uid) -> None:
-        super().__init__(coordinator, prefix, uid, "Battery Power")
+        super().__init__(coordinator, prefix, uid, "Battery Use")
 
 
 class ModbusSolarPowerSensor(ModbusSensor):
