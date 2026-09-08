@@ -200,8 +200,9 @@ async def _async_add_selects(
 
     Shared by the YAML platform and the config entry so the two cannot drift.
     """
-    fetcher = franklinwh.TokenFetcher(username, password)
-    client = franklinwh.Client(fetcher, gateway)
+    from . import get_shared_client  # noqa: PLC0415
+
+    client = await get_shared_client(hass, username, password, gateway)
 
     async def _update_data() -> dict:
         try:

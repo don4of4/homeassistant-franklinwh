@@ -41,6 +41,11 @@ from homeassistant.helpers.update_coordinator import (
 
 _LOGGER = logging.getLogger(__name__)
 DEFAULT_UPDATE_INTERVAL = 30
+# Config-entry cloud polling. Deliberately slower than the YAML default of
+# 30s: the cloud API is rate limited, and in hybrid mode the only thing it
+# still serves is cumulative energy totals, which do not move fast enough
+# to justify the quota. Matches select.py/number.py.
+CLOUD_ENTRY_UPDATE_INTERVAL = 300
 
 PLATFORM_SCHEMA = SENSOR_PLATFORM_SCHEMA.extend(
     {
@@ -94,9 +99,41 @@ async def async_setup_entry(
     entry: "ConfigEntry",
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up sensors from a config entry (UI flow)."""
-    from .modbus import async_setup_entry as modbus_setup_entry  # noqa: PLC0415
-    return await modbus_setup_entry(hass, entry, async_add_entities)
+    """Set up sensors from a config entry (UI flow).
+
+    connection_type decides which sources contribute:
+      modbus - local Modbus sensors only (no cloud dependency)
+      cloud  - cloud API sensors only
+      both   - Modbus for live telemetry, plus the cloud-only sensors that
+               Modbus physically cannot provide. The Modbus register map
+               exposes instantaneous power/voltage/temperature/SOC only, so
+               every cumulative-energy series (the ones the Energy dashboard
+               is built on) has to come from the cloud API.
+    """
+    conn_type = entry.data.get("connection_type", "cloud")
+
+    if conn_type in ("modbus", "both"):
+        from .modbus import async_setup_entry as modbus_setup_entry  # noqa: PLC0415
+
+        await modbus_setup_entry(hass, entry, async_add_entities)
+
+    if conn_type in ("cloud", "both"):
+        await _async_add_cloud_sensors(
+            hass,
+            async_add_entities,
+            entry.data[CONF_USERNAME],
+            entry.data[CONF_PASSWORD],
+            entry.data.get("gateway_id") or entry.data.get("serial", ""),
+            "FranklinWH",
+            entry.data.get("serial") or None,
+            timedelta(seconds=CLOUD_ENTRY_UPDATE_INTERVAL),
+            tolerate_stale_data=True,
+            # In hybrid mode Modbus already serves the live power sensors at
+            # 30s; adding the cloud duplicates would create a second set of
+            # entities (_2 suffixes) polling a rate-limited API for data we
+            # already have locally.
+            skip_modbus_duplicates=(conn_type == "both"),
+        )
 
 
 async def async_setup_platform(
@@ -113,16 +150,12 @@ async def async_setup_platform(
     """
     if CONF_HOST in config and config[CONF_HOST]:
         from .modbus import async_setup_platform as modbus_setup  # noqa: PLC0415
-        return await modbus_setup(hass, config, async_add_entities, discovery_info)
 
-    username: str = config[CONF_USERNAME]
-    password: str = config[CONF_PASSWORD]
-    gateway: str = config[CONF_ID]
-    update_interval: timedelta = config["update_interval"]
+        return await modbus_setup(hass, config, async_add_entities, discovery_info)
 
     # TODO(richo) why does it string the default value
     if config["use_sn"] and config["use_sn"] != "False":
-        unique_id = gateway
+        unique_id = config[CONF_ID]
     else:
         unique_id = None
 
@@ -132,22 +165,73 @@ async def async_setup_platform(
     else:
         prefix = "FranklinWH"
 
-    fetcher = franklinwh.TokenFetcher(username, password)
-    if supports_http2():
-        # pylint: disable=no-name-in-module,import-outside-toplevel
-        from homeassistant.helpers.httpx_client import (  # noqa: PLC0415
-            SSL_ALPN_HTTP11_HTTP2,  # type: ignore  # noqa: PGH003
-            create_async_httpx_client,
-        )
-        # pylint: enable=no-name-in-module,import-outside-toplevel
+    return await _async_add_cloud_sensors(
+        hass,
+        async_add_entities,
+        config[CONF_USERNAME],
+        config[CONF_PASSWORD],
+        config[CONF_ID],
+        prefix,
+        unique_id,
+        config["update_interval"],
+        tolerate_stale_data=config["tolerate_stale_data"],
+        skip_modbus_duplicates=False,
+    )
 
-        def get_client() -> httpx.AsyncClient:
-            return create_async_httpx_client(hass, alpn_protocols=SSL_ALPN_HTTP11_HTTP2)
 
-        franklinwh.HttpClientFactory.set_client_factory(get_client)
-        client = franklinwh.Client(fetcher, gateway)
-    else:
-        client = await hass.async_add_executor_job(franklinwh.Client, fetcher, gateway)
+# Sensors backed by values Modbus does not expose. Every cumulative-energy
+# series lives here, which is why hybrid mode still needs the cloud.
+_CLOUD_ONLY_SENSOR_CLASSES = (
+    "HomeUseSensor",
+    "GridImportSensor",
+    "GridExportSensor",
+    "SolarEnergySensor",
+    "BatteryChargeSensor",
+    "BatteryDischargeSensor",
+    "GeneratorUseSensor",
+    "Sw1LoadSensor",
+    "Sw1UseSensor",
+    "Sw2LoadSensor",
+    "Sw2UseSensor",
+    "V2LUseSensor",
+    "V2LExportSensor",
+    "V2LImportSensor",
+)
+
+# Sensors the Modbus register map also provides, at 30s instead of 300s and
+# with no API quota cost. Cloud-only installs need them; hybrid installs do not.
+_MODBUS_DUPLICATE_SENSOR_CLASSES = (
+    "FranklinBatterySensor",
+    "HomeLoadSensor",
+    "BatteryUseSensor",
+    "GridUseSensor",
+    "GridStatusSensor",
+    "SolarProductionSensor",
+)
+
+
+async def _async_add_cloud_sensors(
+    hass: HomeAssistant,
+    async_add_entities: AddEntitiesCallback,
+    username: str,
+    password: str,
+    gateway: str,
+    prefix: str,
+    unique_id: str | None,
+    update_interval: timedelta,
+    *,
+    tolerate_stale_data: bool,
+    skip_modbus_duplicates: bool,
+) -> None:
+    """Build the cloud client, coordinator and sensor entities.
+
+    Shared by the YAML platform and the config entry so the two cannot drift.
+    (They did drift once already: the config entry ignored connection_type and
+    only ever loaded Modbus, which silently killed the Energy dashboard.)
+    """
+    from . import get_shared_client  # noqa: PLC0415
+
+    client = await get_shared_client(hass, username, password, gateway)
 
     cache = StaleDataCache()
 
@@ -183,9 +267,7 @@ async def async_setup_platform(
                     "Error getting data from FranklinWH - Invalid Body Returned %s", e
                 )
             except httpx.ReadTimeout as e:
-                _LOGGER.warning(
-                    "Timeout fetching data from FranklinWH: %s", e
-                )
+                _LOGGER.warning("Timeout fetching data from FranklinWH: %s", e)
             else:
                 if attempt > 0:
                     _LOGGER.warning(
@@ -200,7 +282,7 @@ async def async_setup_platform(
             "Failed to fetch data from FranklinWH after %s attempts", max_retries
         )
 
-        if config["tolerate_stale_data"] and cache.is_populated():
+        if tolerate_stale_data and cache.is_populated():
             return cache.data()
 
         raise UpdateFailed(
@@ -220,29 +302,13 @@ async def async_setup_platform(
     # sensors until the first scheduled update).
     await coordinator.async_refresh()
 
+    class_names = list(_CLOUD_ONLY_SENSOR_CLASSES)
+    if not skip_modbus_duplicates:
+        class_names += list(_MODBUS_DUPLICATE_SENSOR_CLASSES)
+
+    globals_ = globals()
     async_add_entities(
-        [
-            FranklinBatterySensor(coordinator, prefix, unique_id),
-            HomeLoadSensor(coordinator, prefix, unique_id),
-            HomeUseSensor(coordinator, prefix, unique_id),
-            BatteryUseSensor(coordinator, prefix, unique_id),
-            GridUseSensor(coordinator, prefix, unique_id),
-            GridStatusSensor(coordinator, prefix, unique_id),
-            SolarProductionSensor(coordinator, prefix, unique_id),
-            BatteryChargeSensor(coordinator, prefix, unique_id),
-            BatteryDischargeSensor(coordinator, prefix, unique_id),
-            GeneratorUseSensor(coordinator, prefix, unique_id),
-            GridImportSensor(coordinator, prefix, unique_id),
-            GridExportSensor(coordinator, prefix, unique_id),
-            SolarEnergySensor(coordinator, prefix, unique_id),
-            Sw1LoadSensor(coordinator, prefix, unique_id),
-            Sw1UseSensor(coordinator, prefix, unique_id),
-            Sw2LoadSensor(coordinator, prefix, unique_id),
-            Sw2UseSensor(coordinator, prefix, unique_id),
-            V2LUseSensor(coordinator, prefix, unique_id),
-            V2LExportSensor(coordinator, prefix, unique_id),
-            V2LImportSensor(coordinator, prefix, unique_id),
-        ]
+        [globals_[name](coordinator, prefix, unique_id) for name in class_names]
     )
 
 

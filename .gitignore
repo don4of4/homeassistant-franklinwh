@@ -5,3 +5,7 @@
 ha_db_backup_*.db
 history_export_*.json
 statistics_export_*.json
+
+# Python bytecode (created by local syntax checks)
+__pycache__/
+*.py[cod]

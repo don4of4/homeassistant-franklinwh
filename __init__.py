@@ -106,20 +106,48 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 # ── Shared helpers (used by YAML platforms and config entry platforms) ──
 
 
-def get_shared_client(
+async def get_shared_client(
     hass: HomeAssistant,
     username: str,
     password: str,
     gateway: str,
 ) -> franklinwh.Client:
-    """Return a shared FranklinWH Client for the given gateway."""
+    """Return a shared FranklinWH Client for the given gateway.
+
+    One client per gateway, reused by every cloud platform (sensor, select,
+    number). Each client owns a TokenFetcher, and each TokenFetcher logs in
+    independently - so a platform that builds its own client costs an extra
+    login on every restart. This account locks after 3 bad attempts and has
+    been disassociated once already, so logins are treated as a scarce
+    resource.
+    """
     hass.data.setdefault(DOMAIN, {})
     key = f"client_{gateway}"
 
     if key not in hass.data[DOMAIN]:
         _LOGGER.debug("Creating shared FranklinWH client for gateway %s", gateway)
+        from .sensor import supports_http2  # noqa: PLC0415
+
         fetcher = franklinwh.TokenFetcher(username, password)
-        client = franklinwh.Client(fetcher, gateway)
+        if supports_http2():
+            # pylint: disable=no-name-in-module,import-outside-toplevel
+            from homeassistant.helpers.httpx_client import (  # noqa: PLC0415
+                SSL_ALPN_HTTP11_HTTP2,  # type: ignore  # noqa: PGH003
+                create_async_httpx_client,
+            )
+            # pylint: enable=no-name-in-module,import-outside-toplevel
+
+            def get_client() -> Any:
+                return create_async_httpx_client(
+                    hass, alpn_protocols=SSL_ALPN_HTTP11_HTTP2
+                )
+
+            franklinwh.HttpClientFactory.set_client_factory(get_client)
+            client = franklinwh.Client(fetcher, gateway)
+        else:
+            client = await hass.async_add_executor_job(
+                franklinwh.Client, fetcher, gateway
+            )
         hass.data[DOMAIN][key] = client
 
     return hass.data[DOMAIN][key]
