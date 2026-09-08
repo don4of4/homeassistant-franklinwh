@@ -157,7 +157,9 @@ async def _read_all_registers(host: str, port: int) -> dict[str, Any]:
     # Model 714: Battery DC power (addr 1048, len 1)
     m714 = await _modbus_read(host, port, 1048, 1)
     if m714 and len(m714) >= 2:
-        data["battery_power"] = _s16(m714, 0) / 1000.0  # W → kW
+        # Raw int16 watts, resolved jointly with grid power below - this
+        # register has the same overflow ceiling.
+        data["_battery_raw_w"] = _s16(m714, 0)
 
     # Model 701: AC measurements (addr 72, len 50)
     m701 = await _modbus_read(host, port, 72, 50)
@@ -209,79 +211,104 @@ async def _read_all_registers(host: str, port: int) -> dict[str, Any]:
         data["reserve_soc"] = _u16(ext, 8)
         data["reserve_soc_2"] = _u16(ext, 9)
 
-    _resolve_grid_wraparound(data)
+    _resolve_power_wraparound(data, host)
 
     return data
 
 
-# Above this magnitude a raw grid reading is close enough to the int16 rails
+# Above this magnitude a raw reading is close enough to the int16 rails
 # (+/-32767) that wraparound is plausible and worth testing for. Below it the
 # reading is taken at face value, so ordinary readings are never perturbed.
-_GRID_WRAP_SUSPECT_W = 20000
+_WRAP_SUSPECT_W = 20000
 _UINT16_SPAN_W = 65536
 
+# Weight on the continuity/magnitude tiebreaker. Must stay below 0.5 so the
+# energy balance always dominates the choice of candidate group - see the
+# degeneracy note in _resolve_power_wraparound.
+_TIEBREAK_WEIGHT = 0.25
 
-def _resolve_grid_wraparound(data: dict[str, Any]) -> None:
-    """Undo int16 overflow on the grid power register.
+# Last resolved values per gateway, used as a continuity prior.
+_LAST_RESOLVED: dict[str, tuple[float, float]] = {}
 
-    The gateway reports grid power at model 701 offset 8 as a *signed 16-bit*
-    value in watts, so it can only represent -32.768 kW to +32.767 kW. This
-    house pulls more than that: 3x aPower charging at ~19.6 kW on top of a
-    ~15 kW house load is ~35 kW of import, which wraps to about -30 kW and
-    makes the sensor read as if the house were exporting.
 
-    Observed 2026-09-08 00:04-00:24: 11 sign flips, each a jump of ~65.5 kW
-    between consecutive 30s samples -- physically impossible, and exactly one
-    uint16 span.
+def _resolve_power_wraparound(data: dict[str, Any], host: str) -> None:
+    """Undo int16 overflow on the grid and battery power registers.
 
-    The true value is only known modulo 65536, so the ambiguity is resolved
-    with the independent energy balance:
+    Both grid power (model 701 offset 8) and battery power (model 714) are
+    *signed 16-bit* values in watts, so each can only represent -32.768 kW to
+    +32.767 kW. Real installations exceed that. Observed here 2026-09-08:
+    batteries charging at ~19.6 kW plus an EV charger and house load put grid
+    import at ~35 kW, which wrapped to about -30 kW and read as export.
+
+    Battery has less headroom than it looks: 3x aPower peaks at 30 kW against a
+    32.767 kW ceiling, and a larger bank passes it outright.
+
+    A wrapped value is only known modulo 65536, so candidates are the raw value
+    and raw +/- 65536. They are scored against the energy balance
 
         grid = home_load - battery_power - solar
 
-    (battery_power is negative while charging, so charging *adds* to import.)
-    That balance is computed from home_load and solar, which are read as
-    *unsigned* 16-bit and so do not share this failure mode.
+    which holds because home_load and solar are read as *unsigned* 16-bit and
+    therefore cannot have wrapped.
 
-    Note battery_power (model 714) is also int16 watts, so it has the same
-    ceiling. 3x aPower peaks at 30 kW, leaving only ~2.7 kW of headroom. It
-    cannot be corrected the same way -- the energy balance would be circular
-    once grid is derived from it -- so a larger battery bank would need a
-    different approach.
+    Degeneracy: the balance residual works out to |base + dg + db|, so it
+    depends only on the *sum* of the two offsets. Shifting grid up by one span
+    and battery down by one span leaves the residual unchanged, meaning the
+    balance alone cannot say *which* register wrapped when both are suspect.
+    That tie is broken by continuity against the previous poll - real power
+    cannot move 65.5 kW in 30 seconds - falling back to preferring the
+    smallest-magnitude solution when there is no previous reading.
     """
-    raw_w = data.pop("_grid_raw_w", None)
-    if raw_w is None:
-        return
+    raw_g = data.pop("_grid_raw_w", None)
+    raw_b = data.pop("_battery_raw_w", None)
+
+    def commit(g_w: float | None, b_w: float | None) -> None:
+        if g_w is not None:
+            data["grid_power"] = g_w / 1000.0
+        if b_w is not None:
+            data["battery_power"] = b_w / 1000.0
+        if g_w is not None and b_w is not None:
+            _LAST_RESOLVED[host] = (g_w, b_w)
 
     home_kw = data.get("home_load")
-    battery_kw = data.get("battery_power")
 
-    # Without the balance there is nothing to disambiguate against; and a
-    # reading well inside the rails cannot have wrapped.
-    if (
-        home_kw is None
-        or battery_kw is None
-        or abs(raw_w) < _GRID_WRAP_SUSPECT_W
-    ):
-        data["grid_power"] = raw_w / 1000.0
+    # Without the balance there is nothing to disambiguate against.
+    if raw_g is None or raw_b is None or home_kw is None:
+        commit(raw_g, raw_b)
         return
 
-    solar_kw = data.get("solar_power") or 0.0
-    expected_w = (home_kw - battery_kw - solar_kw) * 1000.0
+    solar_w = (data.get("solar_power") or 0.0) * 1000.0
+    home_w = home_kw * 1000.0
 
-    # The true value is congruent to raw modulo 65536; pick the candidate the
-    # energy balance actually supports.
-    candidates = (raw_w, raw_w + _UINT16_SPAN_W, raw_w - _UINT16_SPAN_W)
-    best = min(candidates, key=lambda c: abs(c - expected_w))
+    def candidates(raw: int) -> tuple[int, ...]:
+        # A reading well inside the rails cannot have wrapped.
+        if abs(raw) < _WRAP_SUSPECT_W:
+            return (raw,)
+        return (raw, raw + _UINT16_SPAN_W, raw - _UINT16_SPAN_W)
 
-    if best != raw_w:
+    prev = _LAST_RESOLVED.get(host)
+
+    def score(g_w: int, b_w: int) -> float:
+        balance = abs(g_w - (home_w - b_w - solar_w))
+        if prev is not None:
+            tiebreak = abs(g_w - prev[0]) + abs(b_w - prev[1])
+        else:
+            tiebreak = abs(g_w) + abs(b_w)
+        return balance + _TIEBREAK_WEIGHT * tiebreak
+
+    best_g, best_b = min(
+        ((g, b) for g in candidates(raw_g) for b in candidates(raw_b)),
+        key=lambda pair: score(*pair),
+    )
+
+    if best_g != raw_g or best_b != raw_b:
         _LOGGER.debug(
-            "Grid power int16 wraparound corrected: raw %d W -> %d W "
-            "(home %.1f kW, battery %.1f kW, expected %.0f W)",
-            raw_w, best, home_kw, battery_kw, expected_w,
+            "int16 wraparound corrected: grid %d -> %d W, battery %d -> %d W "
+            "(home %.1f kW, solar %.1f kW)",
+            raw_g, best_g, raw_b, best_b, home_kw, solar_w / 1000.0,
         )
 
-    data["grid_power"] = best / 1000.0
+    commit(best_g, best_b)
 
 
 # ── Platform setup ───────────────────────────────────────────────────
