@@ -213,6 +213,71 @@ _MODBUS_DUPLICATE_SENSOR_CLASSES = (
 )
 
 
+# Retry budget for one coordinator refresh.
+_FETCH_RETRIES = 3
+_FETCH_RETRY_DELAY = 2  # seconds
+
+
+async def _fetch_stats(
+    client,
+    cache: "StaleDataCache",
+    *,
+    tolerate_stale_data: bool,
+    retries: int = _FETCH_RETRIES,
+    delay: float = _FETCH_RETRY_DELAY,
+) -> franklinwh.Stats:
+    """Fetch stats from the cloud API, retrying transient failures.
+
+    Extracted from the coordinator closure so it can be tested directly.
+
+    The final `except Exception` is deliberate. franklinwh raises a documented
+    set of exceptions, but it also has bugs: get_stats() does
+    `data = info["runtimeData"]` and only then checks `if data is None`, so an
+    API reply of `result: null` raises TypeError one line before the guard
+    (reported on richo/homeassistant-franklinwh#82). Without a catch-all that
+    surfaces as "Unexpected error fetching franklinwh data", skips the retries,
+    and ignores a usable cached value. A bad reply from a remote API is a
+    transient condition whatever the library does with it.
+    """
+    _LOGGER.debug("Fetching latest data from FranklinWH")
+    for attempt in range(retries):
+        if attempt > 0:
+            _LOGGER.warning("Trying again")
+            await asyncio.sleep(delay)
+        try:
+            data = await client.get_stats()
+        except franklinwh.client.DeviceTimeoutException as e:
+            _LOGGER.warning("Error getting data from FranklinWH - Device Timeout: %s", e)
+        except franklinwh.client.GatewayOfflineException as e:
+            _LOGGER.warning("Error getting data from FranklinWH - Gateway Offline %s", e)
+        except franklinwh.client.AccountLockedException as e:
+            _LOGGER.warning("Error getting data from FranklinWH - Account Locked %s", e)
+        except franklinwh.client.InvalidCredentialsException as e:
+            _LOGGER.warning("Error getting data from FranklinWH - Invalid Credentials %s", e)
+        except franklinwh.client.InvalidDataException as e:
+            _LOGGER.warning("Error getting data from FranklinWH - Invalid Body Returned %s", e)
+        except httpx.ReadTimeout as e:
+            _LOGGER.warning("Timeout fetching data from FranklinWH: %s", e)
+        except Exception as e:  # noqa: BLE001 - see docstring
+            _LOGGER.warning(
+                "Error getting data from FranklinWH - %s: %s", type(e).__name__, e
+            )
+        else:
+            if attempt > 0:
+                _LOGGER.warning("Successfully fetched data from FranklinWH after retry")
+            else:
+                _LOGGER.debug("Fetched latest data from FranklinWH: %s", data)
+            cache.store(data)
+            return data
+
+    _LOGGER.warning("Failed to fetch data from FranklinWH after %s attempts", retries)
+
+    if tolerate_stale_data and cache.is_populated():
+        return cache.data()
+
+    raise UpdateFailed(f"Failed to fetch data from FranklinWH after {retries} attempts.")
+
+
 async def _async_add_cloud_sensors(
     hass: HomeAssistant,
     async_add_entities: AddEntitiesCallback,
@@ -239,57 +304,8 @@ async def _async_add_cloud_sensors(
     cache = StaleDataCache()
 
     async def _update_data() -> franklinwh.Stats:
-        max_retries = 3
-        retry_delay = 2  # seconds
-
-        _LOGGER.debug("Fetching latest data from FranklinWH")
-        for attempt in range(max_retries):
-            if attempt > 0:
-                _LOGGER.warning("Trying again")
-                await asyncio.sleep(retry_delay)
-            try:
-                data = await client.get_stats()
-            except franklinwh.client.DeviceTimeoutException as e:
-                _LOGGER.warning(
-                    "Error getting data from FranklinWH - Device Timeout: %s", e
-                )
-            except franklinwh.client.GatewayOfflineException as e:
-                _LOGGER.warning(
-                    "Error getting data from FranklinWH - Gateway Offline %s", e
-                )
-            except franklinwh.client.AccountLockedException as e:
-                _LOGGER.warning(
-                    "Error getting data from FranklinWH - Account Locked %s", e
-                )
-            except franklinwh.client.InvalidCredentialsException as e:
-                _LOGGER.warning(
-                    "Error getting data from FranklinWH - Invalid Credentials %s", e
-                )
-            except franklinwh.client.InvalidDataException as e:
-                _LOGGER.warning(
-                    "Error getting data from FranklinWH - Invalid Body Returned %s", e
-                )
-            except httpx.ReadTimeout as e:
-                _LOGGER.warning("Timeout fetching data from FranklinWH: %s", e)
-            else:
-                if attempt > 0:
-                    _LOGGER.warning(
-                        "Successfully fetched data from FranklinWH after retry"
-                    )
-                else:
-                    _LOGGER.debug("Fetched latest data from FranklinWH: %s", data)
-                cache.store(data)
-                return data
-
-        _LOGGER.warning(
-            "Failed to fetch data from FranklinWH after %s attempts", max_retries
-        )
-
-        if tolerate_stale_data and cache.is_populated():
-            return cache.data()
-
-        raise UpdateFailed(
-            f"Failed to fetch data from FranklinWH after {max_retries} attempts."
+        return await _fetch_stats(
+            client, cache, tolerate_stale_data=tolerate_stale_data
         )
 
     coordinator = DataUpdateCoordinator[franklinwh.Stats](

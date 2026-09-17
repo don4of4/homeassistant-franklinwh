@@ -1,0 +1,32 @@
+# CI workflow for the test suite. Copy to .github/workflows/tests.yaml.
+# Kept here as an example because the token used to push this repo has no
+# `workflow` scope and GitHub rejects pushes that add workflow files.
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: src
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: pip install homeassistant pytest "franklinwh==2026.3.*"
+
+      # Run from a neutral directory: this repo ships select.py at the top
+      # level, which shadows Python's stdlib `select` if the repo root ends up
+      # on sys.path. tests/conftest.py imports the integration as the package
+      # `franklin_wh` via a symlink.
+      - name: Run tests
+        working-directory: /tmp
+        run: python -m pytest "$GITHUB_WORKSPACE/src/tests" -q

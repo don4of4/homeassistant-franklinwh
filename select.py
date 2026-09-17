@@ -47,6 +47,9 @@ _RUNNING_MODE_MAP = {
     7169: "time_of_use",
 }
 
+# Unknown runingMode values already reported, so the warning fires once each.
+_WARNED_RUNNING_MODES: set = set()
+
 OPERATING_MODES = ["self_consumption", "time_of_use", "emergency_backup"]
 EXPORT_MODES = ["solar_only", "solar_and_apower", "no_export"]
 
@@ -109,8 +112,21 @@ async def _read_operating_mode(client) -> tuple[str | None, int | None]:
     sw = await client._switch_status()
     running_mode = sw.get("runingMode")
     mode = _RUNNING_MODE_MAP.get(running_mode)
-    if mode is None:
-        _LOGGER.warning("get_mode: unrecognised runingMode %r", running_mode)
+    if mode is None and running_mode not in _WARNED_RUNNING_MODES:
+        # Firmware versions disagree on these IDs: this integration sees
+        # 7167/7168/7169, the library ships 9322/9323/9324, and #82 reported
+        # 75616 — a third set. Log the reserve-SOC keys alongside it, since
+        # whichever one is populated identifies the active mode, then warn only
+        # once per unknown value instead of on every poll.
+        _WARNED_RUNNING_MODES.add(running_mode)
+        _LOGGER.warning(
+            "get_mode: unrecognised runingMode %r. Known: %s. Reserve values "
+            "seen: %s. Please report these at "
+            "https://github.com/don4of4/homeassistant-franklinwh/issues",
+            running_mode,
+            sorted(_RUNNING_MODE_MAP),
+            {k: sw.get(k) for k in soc_key_map.values() if k in sw},
+        )
     reserve = sw.get(soc_key_map[mode]) if mode else None
     return mode, reserve
 
