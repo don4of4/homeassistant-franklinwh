@@ -42,6 +42,7 @@ from homeassistant.const import (
     UnitOfTemperature,
 )
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryError
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
@@ -369,6 +370,15 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Modbus sensors from a config entry."""
+    if CONF_HOST not in entry.data:
+        # Reached only if connection_type says modbus/both but the entry has no
+        # host (e.g. hand-edited .storage). Before the connection_type dispatch
+        # in sensor.py this surfaced as a bare KeyError: 'host'.
+        raise ConfigEntryError(
+            "This FranklinWH entry is configured for local Modbus but has no "
+            "host address. Remove and re-add the integration, choosing the "
+            "connection type that matches your setup."
+        )
     host = entry.data[CONF_HOST]
     port = entry.data.get(CONF_PORT, DEFAULT_PORT)
     serial = entry.data.get("serial", "")

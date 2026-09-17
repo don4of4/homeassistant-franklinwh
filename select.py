@@ -181,7 +181,10 @@ async def async_setup_entry(
         entry.data[CONF_PASSWORD],
         entry.data.get("gateway_id") or entry.data.get("serial", ""),
         "FranklinWH",
-        entry.data.get("serial") or None,
+        # Cloud-only entries carry gateway_id but no serial, so falling back
+        # keeps entities registry-tracked (renameable, assignable to an area)
+        # instead of silently unique_id-less.
+        entry.data.get("serial") or entry.data.get("gateway_id") or None,
         timedelta(seconds=DEFAULT_UPDATE_INTERVAL),
     )
 
