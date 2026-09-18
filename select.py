@@ -19,6 +19,9 @@ from homeassistant.const import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
+
+from . import describe_exception
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
@@ -45,6 +48,21 @@ _RUNNING_MODE_MAP = {
     7167: "self_consumption",
     7168: "emergency_backup",
     7169: "time_of_use",
+}
+
+# Per-mode reserve-SOC fields. The device reports all three regardless of which
+# mode is active, so a mode change can read the target mode's own reserve back
+# out and preserve it.
+_MODE_FACTORIES = {
+    "self_consumption": franklinwh.Mode.self_consumption,
+    "time_of_use": franklinwh.Mode.time_of_use,
+    "emergency_backup": franklinwh.Mode.emergency_backup,
+}
+
+_MODE_SOC_KEYS = {
+    "self_consumption": "selfMinSoc",
+    "time_of_use": "touMinSoc",
+    "emergency_backup": "backupMaxSoc",
 }
 
 # Unknown runingMode values already reported, so the warning fires once each.
@@ -77,11 +95,7 @@ async def _read_operating_mode(client) -> tuple[str | None, int | None]:
 
     Returns (mode_name, reserve_soc).
     """
-    soc_key_map = {
-        "self_consumption": "selfMinSoc",
-        "time_of_use": "touMinSoc",
-        "emergency_backup": "backupMaxSoc",
-    }
+    soc_key_map = _MODE_SOC_KEYS
 
     # Primary: human-readable name from high-level status
     try:
@@ -115,9 +129,10 @@ async def _read_operating_mode(client) -> tuple[str | None, int | None]:
     if mode is None and running_mode not in _WARNED_RUNNING_MODES:
         # Firmware versions disagree on these IDs: this integration sees
         # 7167/7168/7169, the library ships 9322/9323/9324, and #82 reported
-        # 75616 — a third set. Log the reserve-SOC keys alongside it, since
-        # whichever one is populated identifies the active mode, then warn only
-        # once per unknown value instead of on every poll.
+        # 75616 — a third set. The device populates ALL THREE reserve fields
+        # whatever the mode, so they do not identify it (an earlier version of
+        # this comment claimed they did). They are logged because they are the
+        # values a mode change must preserve. Warn once per unknown value.
         _WARNED_RUNNING_MODES.add(running_mode)
         _LOGGER.warning(
             "get_mode: unrecognised runingMode %r. Known: %s. Reserve values "
@@ -129,6 +144,27 @@ async def _read_operating_mode(client) -> tuple[str | None, int | None]:
         )
     reserve = sw.get(soc_key_map[mode]) if mode else None
     return mode, reserve
+
+
+async def _read_reserve_for_mode(client, mode: str) -> int | None:
+    """Read the reserve SOC the device already holds for `mode`.
+
+    Mode changes must send a reserve SOC, and franklinwh defaults it to 20 (100
+    for emergency backup) when the caller omits it. Passing the *current* mode's
+    reserve is wrong too, since each mode keeps its own. Reading the target
+    mode's own value back out preserves it, and works even when runingMode is
+    unrecognised — the reserve fields are readable regardless.
+    """
+    key = _MODE_SOC_KEYS[mode]
+    sw = await client._switch_status()
+    value = sw.get(key)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        _LOGGER.warning("Reserve SOC %s has a non-numeric value %r", key, value)
+        return None
 
 
 async def _read_export_settings(client) -> tuple[str, float | None]:
@@ -205,6 +241,29 @@ async def async_setup_entry(
     )
 
 
+async def _read_mode_and_export(client) -> dict:
+    """Read mode, reserve SOC and export settings for the coordinator.
+
+    Module level so the error handling is testable; it used to be a closure.
+    """
+    try:
+        operating_mode, reserve_soc = await _read_operating_mode(client)
+        export_mode, export_limit_kw = await _read_export_settings(client)
+    except Exception as err:
+        # Name the type: franklinwh raises bare exceptions such as
+        # InvalidDataException() whose str() is empty, which produced the
+        # contentless "Error fetching FranklinWH mode/export status:" in #82.
+        raise UpdateFailed(
+            f"Error fetching FranklinWH mode/export status: {describe_exception(err)}"
+        ) from err
+    return {
+        "operating_mode": operating_mode,
+        "reserve_soc": reserve_soc,
+        "export_mode": export_mode,
+        "export_limit_kw": export_limit_kw,
+    }
+
+
 async def _async_add_selects(
     hass: HomeAssistant,
     async_add_entities: AddEntitiesCallback,
@@ -224,17 +283,7 @@ async def _async_add_selects(
     client = await get_shared_client(hass, username, password, gateway)
 
     async def _update_data() -> dict:
-        try:
-            operating_mode, reserve_soc = await _read_operating_mode(client)
-            export_mode, export_limit_kw = await _read_export_settings(client)
-            return {
-                "operating_mode": operating_mode,
-                "reserve_soc": reserve_soc,
-                "export_mode": export_mode,
-                "export_limit_kw": export_limit_kw,
-            }
-        except Exception as err:
-            raise UpdateFailed(f"Error fetching FranklinWH mode/export status: {err}") from err
+        return await _read_mode_and_export(client)
 
     coordinator = DataUpdateCoordinator[dict](
         hass,
@@ -315,26 +364,42 @@ class OperatingModeSelect(FranklinSelectBase):
         return None
 
     async def async_select_option(self, option: str) -> None:
-        """Change the operating mode, preserving the current reserve SOC."""
-        reserve_soc = (
-            self.coordinator.data.get("reserve_soc")
-            if self.coordinator.data
-            else None
-        )
+        """Change the operating mode, preserving that mode's reserve SOC.
 
-        if option == "emergency_backup":
-            soc = int(reserve_soc) if reserve_soc is not None else 100
-            mode = franklinwh.Mode.emergency_backup(soc=soc)
-        elif option == "self_consumption":
-            kwargs = {"soc": int(reserve_soc)} if reserve_soc is not None else {}
-            mode = franklinwh.Mode.self_consumption(**kwargs)
-        elif option == "time_of_use":
-            kwargs = {"soc": int(reserve_soc)} if reserve_soc is not None else {}
-            mode = franklinwh.Mode.time_of_use(**kwargs)
-        else:
-            _LOGGER.error("Unknown operating mode: %s", option)
+        Never call franklinwh's Mode factories without an explicit soc. They
+        default to 20 (100 for emergency backup), and set_mode writes whatever
+        it is given — which silently replaced a user's 33% reserve with 20%
+        (richo/homeassistant-franklinwh#82).
+        """
+        factory = _MODE_FACTORIES.get(option)
+        if factory is None:
+            raise HomeAssistantError(f"Unknown operating mode: {option}")
+
+        if option == self.current_option:
+            # Every set_mode also forces Storm Hedge on (see below), so do not
+            # write at all when there is nothing to change.
+            _LOGGER.debug("Operating mode already %s — not writing", option)
             return
 
+        soc = await _read_reserve_for_mode(self._client, option)
+        if soc is None:
+            # Refuse rather than let the library write its default over a
+            # reserve we could not read.
+            raise HomeAssistantError(
+                f"Cannot switch to {option}: the device did not report its "
+                f"{_MODE_SOC_KEYS[option]} reserve, and changing mode without "
+                "it would overwrite your reserve SOC with a default."
+            )
+
+        _LOGGER.warning(
+            "Changing operating mode to %s (reserve SOC %s%%). Note: this also "
+            "enables Storm Hedge — franklinwh's Mode.payload() hardcodes "
+            "stromEn=1, so every mode change turns it on. Re-disable it in the "
+            "FranklinWH app if you had it off.",
+            option,
+            soc,
+        )
+        mode = factory(soc=soc)
         await self._client.set_mode(mode)
         # Optimistically update local state — the device takes a moment to
         # apply the change so an immediate API read-back may not reflect it yet.
@@ -372,16 +437,43 @@ class ExportModeSelect(FranklinSelectBase):
         return None
 
     async def async_select_option(self, option: str) -> None:
-        """Change the export mode, preserving the current power limit."""
+        """Change the export mode, preserving the device's power limit.
+
+        The limit is read back from the device rather than taken from
+        coordinator data. set_export_settings treats limit_kw=None as
+        *unlimited*, so a stale or failed refresh would have silently removed a
+        configured export cap — the same way a missing reserve SOC silently
+        reset the battery reserve in #82.
+        """
         if option not in _EXPORT_MODE_MAP:
-            _LOGGER.error("Unknown export mode: %s", option)
+            raise HomeAssistantError(f"Unknown export mode: {option}")
+
+        if option == self.current_option:
+            _LOGGER.debug("Export mode already %s — not writing", option)
             return
 
-        limit_kw = (
-            self.coordinator.data.get("export_limit_kw")
-            if self.coordinator.data
-            else None
-        )
+        try:
+            current_mode, limit_kw = await _read_export_settings(self._client)
+        except Exception as err:
+            raise HomeAssistantError(
+                f"Cannot switch export mode to {option}: the current export "
+                f"limit could not be read ({describe_exception(err)}), and "
+                "writing without it would clear your export cap."
+            ) from err
+
+        if limit_kw is not None and limit_kw <= 0:
+            # no_export stores gridFeedMax 0.0, which is outside the valid
+            # 0.1-10000 kW range and is an artifact of that mode rather than a
+            # cap the user chose. Carrying it into solar export would cap at
+            # 0 kW and look like the mode change did nothing.
+            _LOGGER.info(
+                "Export limit reads %s kW under %s; treating as no cap. Set one "
+                "with the Export Limit control if you want one.",
+                limit_kw,
+                current_mode,
+            )
+            limit_kw = None
+
         await _write_export_settings(self._client, option, limit_kw)
         # Optimistically update local state
         if self.coordinator.data is not None:

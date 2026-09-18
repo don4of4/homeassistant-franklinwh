@@ -30,6 +30,8 @@ from homeassistant.const import (
     __short_version__,
 )
 from homeassistant.core import HomeAssistant
+
+from . import describe_exception
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
@@ -260,7 +262,7 @@ async def _fetch_stats(
             _LOGGER.warning("Timeout fetching data from FranklinWH: %s", e)
         except Exception as e:  # noqa: BLE001 - see docstring
             _LOGGER.warning(
-                "Error getting data from FranklinWH - %s: %s", type(e).__name__, e
+                "Error getting data from FranklinWH - %s", describe_exception(e)
             )
         else:
             if attempt > 0:

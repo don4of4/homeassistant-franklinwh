@@ -63,6 +63,20 @@ def clear_rate_limit(hass: HomeAssistant) -> None:
         data[_RATE_LIMIT_BACKOFF_KEY] = _INITIAL_BACKOFF_SECONDS
 
 
+
+def describe_exception(err: BaseException) -> str:
+    """Render an exception as "Type: message", or just "Type" when it has none.
+
+    franklinwh raises bare exceptions such as InvalidDataException() whose
+    str() is empty. Interpolating those directly produced the contentless
+    "Error fetching FranklinWH mode/export status:" reported in
+    richo/homeassistant-franklinwh#82, and naively prefixing the type leaves a
+    dangling colon instead.
+    """
+    text = str(err)
+    return f"{type(err).__name__}: {text}" if text else type(err).__name__
+
+
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the FranklinWH integration (legacy YAML support)."""
     hass.data.setdefault(DOMAIN, {})

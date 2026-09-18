@@ -20,6 +20,8 @@ from homeassistant.const import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+
+from . import describe_exception
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
@@ -151,8 +153,10 @@ async def _async_add_numbers(
                 "export_limit_kw": export_limit_kw,
             }
         except Exception as err:
+            # Include the type — franklinwh raises bare exceptions whose str()
+            # is empty (see select.py).
             raise UpdateFailed(
-                f"Error fetching FranklinWH export settings: {err}"
+                f"Error fetching FranklinWH export settings: {describe_exception(err)}"
             ) from err
 
     coordinator = DataUpdateCoordinator[dict](
