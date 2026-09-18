@@ -1,5 +1,8 @@
 # Changelog
 
+## 2026.10.0
+- Smart-circuit switches for UI setups: one per circuit, named from the gateway; merged circuits 1+2 become one entity. Closes #4.
+
 ## 2026.9.0
 - Standard HACS layout (`custom_components/franklin_wh/`). Fixes the top-level `select.py` shadowing Python's `select` module.
 - The cloud client is now vendored (`franklin_wh/api/`) from richo/franklinwh-python main, so no package is installed at startup and fixes ship with the integration.

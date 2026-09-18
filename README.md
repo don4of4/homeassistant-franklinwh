@@ -27,7 +27,7 @@ HACS → Integrations → ⋮ → Custom repositories → add `https://github.co
 
 Local (Modbus): battery SOC, grid / home / battery / solar power, grid voltage and frequency, ambient and cabinet temperature, grid status, operating mode, reserve SOC, battery DC voltage.
 
-Cloud: the energy totals (grid import/export, home use, solar, battery charge/discharge, switch and V2L totals), generator and switch power, plus the controls — operating mode, export mode, export limit. In Local + Cloud, the live power sensors come from Modbus only.
+Cloud: the energy totals (grid import/export, home use, solar, battery charge/discharge, switch and V2L totals), generator and switch power, plus the controls — operating mode, export mode, export limit, and a switch per smart circuit (named as in the app). In Local + Cloud, the live power sensors come from Modbus only.
 
 Grid and battery power are signed 16-bit registers on the aGate, so anything above 32.767 kW wraps; the integration resolves that against the energy balance.
 
