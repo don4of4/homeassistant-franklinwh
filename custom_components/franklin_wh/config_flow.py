@@ -90,7 +90,7 @@ async def _test_modbus(host: str, port: int) -> dict[str, str] | None:
 async def _test_cloud(username: str, password: str, gateway: str) -> bool:
     """Test cloud API credentials."""
     try:
-        import franklinwh  # noqa: PLC0415
+        from . import api as franklinwh  # noqa: PLC0415
 
         fetcher = franklinwh.TokenFetcher(username, password)
         client = franklinwh.Client(fetcher, gateway)

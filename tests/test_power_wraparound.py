@@ -2,7 +2,7 @@
 
 import pytest
 
-from franklin_wh import modbus as modbus_mod
+from custom_components.franklin_wh import modbus as modbus_mod
 
 SPAN = 65536
 

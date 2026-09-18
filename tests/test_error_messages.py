@@ -13,7 +13,7 @@ from conftest import run
 
 from homeassistant.helpers.update_coordinator import UpdateFailed
 
-from franklin_wh import select as select_mod
+from custom_components.franklin_wh import select as select_mod
 
 
 class Bare(Exception):

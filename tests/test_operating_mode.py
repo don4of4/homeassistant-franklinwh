@@ -3,7 +3,7 @@
 import pytest
 from conftest import run
 
-from franklin_wh import select as select_mod
+from custom_components.franklin_wh import select as select_mod
 
 
 class FakeClient:
@@ -26,6 +26,15 @@ def _clear_warned():
     select_mod._WARNED_RUNNING_MODES.clear()
     yield
     select_mod._WARNED_RUNNING_MODES.clear()
+
+
+def test_tou_list_is_authoritative_when_available():
+    class TouClient(FakeClient):
+        async def get_mode(self):
+            return "time_of_use", 25.0
+
+    client = TouClient(status={"name": "Self Consumption"}, switch={"selfMinSoc": 20})
+    assert run(select_mod._read_operating_mode(client)) == ("time_of_use", 25)
 
 
 def test_name_from_status_is_preferred():

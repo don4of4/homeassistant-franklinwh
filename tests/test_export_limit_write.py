@@ -7,7 +7,7 @@ rather than accidental.
 
 from conftest import run
 
-from franklin_wh import number as number_mod
+from custom_components.franklin_wh import number as number_mod
 
 
 class FakeMode:

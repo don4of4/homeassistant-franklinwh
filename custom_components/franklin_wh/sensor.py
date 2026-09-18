@@ -6,7 +6,7 @@ import asyncio
 from datetime import timedelta
 import logging
 
-import franklinwh
+from . import api as franklinwh
 import httpx
 import voluptuous as vol
 

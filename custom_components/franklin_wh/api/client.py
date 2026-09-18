@@ -1,0 +1,984 @@
+"""Client for interacting with FranklinWH gateway API.
+
+This module provides classes and functions to authenticate, send commands,
+and retrieve statistics from FranklinWH energy gateway devices.
+"""
+
+from __future__ import annotations
+from collections.abc import Callable
+
+import asyncio
+from dataclasses import dataclass
+from enum import Enum
+import hashlib
+import json
+import logging
+import time
+import zlib
+
+import httpx
+
+from .constants import DEFAULT_URL_BASE
+
+
+class AccessoryType(Enum):
+    """Represents the type of accessory connected to the FranklinWH gateway.
+
+    Attributes:
+        SMART_CIRCUIT_MODULE (int): A Smart Circuit module, see https://www.franklinwh.com/document/download/smart-circuits-module-installation-guide-sku-accy-scv2-us
+        GENERATOR_MODULE (int): A Generator module, see https://www.franklinwh.com/document/download/generator-module-installation-guide-sku-accy-genv2-us
+    """
+
+    GENERATOR_MODULE = 3
+    SMART_CIRCUIT_MODULE = 4
+
+
+def to_hex(inp):
+    """Convert an integer to an 8-character uppercase hexadecimal string.
+
+    Parameters
+    ----------
+    inp : int
+        The integer to convert.
+
+    Returns:
+    -------
+    str
+        The hexadecimal string representation of the input.
+    """
+    return f"{inp:08X}"
+
+
+def empty_stats():
+    """Return a Stats object with all values set to zero.
+
+    Returns:
+    -------
+    Stats
+        A Stats object with zeroed Current and Totals values.
+    """
+    return Stats(
+        Current(
+            0.0,
+            0.0,
+            False,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            GridStatus.NORMAL,
+        ),
+        Totals(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        ),
+    )
+
+
+class GridStatus(Enum):
+    """Represents the status of the grid connection for the FranklinWH gateway.
+
+    Attributes:
+        NORMAL (int): Grid connection is normal / up.
+        DOWN (int): Grid connection is abnormal / down.
+        OFF (int): Grid connection is turned off at the gateway.
+
+    OFF is set by software, specifically Settings / Go Off-Grid in the app.
+    DOWN is external to the gateway.
+    NORMAL indicates normal operation.
+    """
+
+    NORMAL = 0
+    DOWN = 1
+    OFF = 2
+
+    @staticmethod
+    def from_offgridreason(value: int | None) -> GridStatus:
+        """Convert an offgridreason value to a GridStatus.
+
+        Parameters
+        ----------
+        value : int | None
+            The offgridreason value to convert.
+
+        Returns:
+        -------
+        GridStatus
+            The corresponding GridStatus.
+        """
+        match value:
+            case None | -1:
+                return GridStatus.NORMAL
+            case 0:
+                return GridStatus.DOWN
+            case 1:
+                return GridStatus.OFF
+            case _:
+                raise ValueError(f"Unknown offgridreason value: {value}")
+
+
+class ExportMode(Enum):
+    """Represents the grid export mode for the FranklinWH gateway.
+
+    Attributes:
+        SOLAR_ONLY (int): Solar can export to the grid; battery (aPower) cannot.
+        SOLAR_AND_APOWER (int): Both solar and battery can export to the grid.
+        NO_EXPORT (int): No grid export permitted.
+    """
+
+    SOLAR_ONLY = 1
+    SOLAR_AND_APOWER = 2
+    NO_EXPORT = 3
+
+    @staticmethod
+    def from_flag(value: int) -> ExportMode:
+        """Convert a gridFeedMaxFlag API value to an ExportMode.
+
+        Parameters
+        ----------
+        value : int
+            The gridFeedMaxFlag value from the API response.
+
+        Returns:
+        -------
+        ExportMode
+            The corresponding ExportMode.
+        """
+        try:
+            return ExportMode(value)
+        except ValueError:
+            return ExportMode.SOLAR_ONLY
+
+
+@dataclass
+class ExportSettings:
+    """Current grid export configuration for the FranklinWH gateway.
+
+    Attributes:
+        mode: The active export mode.
+        limit_kw: Export power cap in kW, or None if unlimited.
+    """
+
+    mode: ExportMode
+    limit_kw: float | None
+
+
+@dataclass
+class Current:
+    """Current statistics for FranklinWH gateway."""
+
+    solar_production: float
+    generator_production: float
+    generator_enabled: bool
+    battery_use: float
+    grid_use: float
+    home_load: float
+    battery_soc: float
+    switch_1_load: float
+    switch_2_load: float
+    v2l_use: float
+    grid_status: GridStatus
+
+
+@dataclass
+class Totals:
+    """Total energy statistics for FranklinWH gateway."""
+
+    battery_charge: float
+    battery_discharge: float
+    grid_import: float
+    grid_export: float
+    solar: float
+    generator: float
+    home_use: float
+    switch_1_use: float
+    switch_2_use: float
+    v2l_export: float
+    v2l_import: float
+
+
+@dataclass
+class Stats:
+    """Statistics for FranklinWH gateway."""
+
+    current: Current
+    totals: Totals
+
+
+MODE_TIME_OF_USE = "time_of_use"
+MODE_SELF_CONSUMPTION = "self_consumption"
+MODE_EMERGENCY_BACKUP = "emergency_backup"
+
+# workMode is the stable enum; the profile *ids* alongside it are per-account.
+WORK_MODE_TO_NAME = {
+    1: MODE_TIME_OF_USE,
+    2: MODE_SELF_CONSUMPTION,
+    3: MODE_EMERGENCY_BACKUP,
+}
+
+MODE_MAP = {
+    9322: MODE_TIME_OF_USE,
+    9323: MODE_SELF_CONSUMPTION,
+    9324: MODE_EMERGENCY_BACKUP,
+}
+
+
+class Mode:
+    """Represents an operating mode for the FranklinWH gateway.
+
+    Provides static methods to create specific modes (time of use, emergency backup, self consumption)
+    and generates payloads for API requests to set the gateway's operating mode.
+
+    Attributes:
+    ----------
+    soc : int
+        The state of charge value for the mode.
+    currendId : int | None
+        The current mode identifier.
+    workMode : int | None
+        The work mode value.
+
+    Methods:
+    -------
+    time_of_use(soc=20)
+        Create a time of use mode instance.
+    emergency_backup(soc=100)
+        Create an emergency backup mode instance.
+    self_consumption(soc=20)
+        Create a self consumption mode instance.
+    payload(gateway)
+        Generate the payload dictionary for API requests.
+    """
+
+    @staticmethod
+    def time_of_use(soc=20):
+        """Create a time of use mode instance.
+
+        Parameters
+        ----------
+        soc : int, optional
+            The state of charge value for the mode, defaults to 20.
+
+        Returns:
+        -------
+        Mode
+            An instance of Mode configured for time of use.
+        """
+        mode = Mode(soc)
+        mode.currendId = 9322
+        mode.workMode = 1
+        mode.oldIndex = 3
+        return mode
+
+    @staticmethod
+    def emergency_backup(soc=100):
+        """Create an emergency backup mode instance.
+
+        Parameters
+        ----------
+        soc : int, optional
+            The state of charge value for the mode, defaults to 100.
+
+        Returns:
+        -------
+        Mode
+            An instance of Mode configured for emergency backup.
+        """
+        mode = Mode(soc)
+        mode.currendId = 9324
+        mode.workMode = 3
+        mode.oldIndex = 1
+        return mode
+
+    @staticmethod
+    def self_consumption(soc=20):
+        """Create a self consumption mode instance.
+
+        Parameters
+        ----------
+        soc : int, optional
+            The state of charge value for the mode, defaults to 20.
+
+        Returns:
+        -------
+        Mode
+            An instance of Mode configured for self consumption.
+        """
+        mode = Mode(soc)
+        mode.currendId = 9323
+        mode.workMode = 2
+        mode.oldIndex = 2
+        return mode
+
+    def __init__(self, soc: int) -> None:
+        """Initialize a Mode instance with the given state of charge.
+
+        Parameters
+        ----------
+        soc : int
+            The state of charge value for the mode.
+        """
+        self.soc = soc
+        self.currendId = None
+        self.workMode = None
+        # oldIndex differs per mode (issue #28); stromEn is the Storm Hedge toggle
+        # and must not be forced on (issue #8). Both default to None so that
+        # set_mode() can fill them from the gateway's own tou list, which is more
+        # robust than any constant: profile ids are per-account, not universal.
+        self.oldIndex = None
+        self.stromEn = None
+
+    def payload(self, gateway) -> dict:
+        """Generate the payload dictionary for API requests to set the gateway's operating mode.
+
+        Parameters
+        ----------
+        gateway : str
+            The gateway identifier.
+
+        Returns:
+        -------
+        dict
+            The payload dictionary for the API request.
+        """
+        return {
+            "currendId": str(self.currendId),
+            "gatewayId": gateway,
+            "lang": "EN_US",
+            "oldIndex": str(self.oldIndex if self.oldIndex is not None else 1),
+            "soc": str(self.soc),
+            # Preserve the user's Storm Hedge setting rather than enabling it.
+            "stromEn": str(self.stromEn if self.stromEn is not None else 1),
+            "workMode": str(self.workMode),
+        }
+
+
+class SwitchState(tuple[bool | None, bool | None, bool | None]):
+    """Represents the state of the smart switches connected to the FranklinWH gateway.
+
+    Each element in the tuple corresponds to a switch:
+        - True: Switch is ON
+        - False: Switch is OFF
+        - None: Switch state is unchanged
+    """
+
+    __slots__ = ()
+
+    def __new__(cls, lst: list[bool | None] | None = None):
+        """Convert a list to a SwitchState tuple.
+
+        Parameters
+        ----------
+        lst : optional list[bool | None]
+            The list to convert, defaults to [None, None, None].
+
+        Returns:
+        -------
+        SwitchState
+            The converted SwitchState tuple.
+        """
+        if lst is None:
+            lst = [None, None, None]
+
+        if len(lst) != 3:
+            raise ValueError(
+                "List must have exactly 3 elements to convert to SwitchState."
+            )
+        return super().__new__(cls, lst)
+
+
+class TokenExpiredException(Exception):
+    """raised when the token has expired to signal upstream that you need to create a new client or inject a new token."""
+
+
+class AccountLockedException(Exception):
+    """raised when the account is locked."""
+
+
+class InvalidCredentialsException(Exception):
+    """raised when the credentials are invalid."""
+
+
+class DeviceTimeoutException(Exception):
+    """raised when the device times out."""
+
+
+class GatewayOfflineException(Exception):
+    """raised when the gateway is offline."""
+
+
+class InvalidDataException(Exception):
+    """raised when the API returns data that is structurally invalid"""
+
+
+class PermissionDeniedException(Exception):
+    """raised when the API returns code 181 (Operation without permission), typically when polling for an optional accessory (Smart Circuit, V2L) that is not provisioned on the account."""
+
+
+class HttpClientFactory:
+    """Factory to create AsyncClient."""
+
+    @staticmethod
+    def default_get_client() -> httpx.AsyncClient:
+        """Create an HTTP/2 AsyncClient."""
+        return httpx.AsyncClient(http2=True)
+
+    factory: Callable[..., httpx.AsyncClient] = default_get_client
+
+    @classmethod
+    def set_client_factory(cls, factory: Callable[..., httpx.AsyncClient]) -> None:
+        """Set AsyncClient factory method."""
+        cls.factory = factory
+
+    @classmethod
+    def get_client(cls) -> httpx.AsyncClient:
+        """Create an AsyncClient via factory method."""
+        return cls.factory()
+
+
+class TokenFetcher(HttpClientFactory):
+    """Fetches and refreshes authentication tokens for FranklinWH API."""
+
+    def __init__(self, username: str, password: str) -> None:
+        """Initialize the TokenFetcher with the provided username and password."""
+        self.username = username
+        self.password = password
+        self.info: dict | None = None
+
+    async def get_token(self):
+        """Fetch a new authentication token using the stored credentials.
+
+        Store the intermediate account information in self.info.
+        """
+        self.info = await self.fetch_token()
+        return self.info["token"]
+
+    @staticmethod
+    async def login(username: str, password: str):
+        """Log in to the FranklinWH API and retrieve an authentication token."""
+        await TokenFetcher(username, password).get_token()
+
+    async def fetch_token(self) -> dict:
+        """Log in to the FranklinWH API and retrieve account information."""
+        url = (
+            DEFAULT_URL_BASE + "hes-gateway/terminal/initialize/appUserOrInstallerLogin"
+        )
+        form = {
+            "account": self.username,
+            "password": hashlib.md5(bytes(self.password, "ascii")).hexdigest(),
+            "lang": "en_US",
+            "type": 1,
+        }
+        async with self.get_client() as client:
+            res = await client.post(url, data=form, timeout=10)
+        res.raise_for_status()
+        js = res.json()
+
+        if js["code"] == 401:
+            raise InvalidCredentialsException(js["message"])
+
+        if js["code"] == 400:
+            raise AccountLockedException(js["message"])
+
+        return js["result"]
+
+
+async def retry(func, filter, refresh_func):
+    """Tries calling func, and if filter fails it calls refresh func then tries again."""
+    res = await func()
+    if filter(res):
+        return res
+    await refresh_func()
+    return await func()
+
+
+class Client(HttpClientFactory):
+    """Client for interacting with FranklinWH gateway API."""
+
+    def __init__(
+        self, fetcher: TokenFetcher, gateway: str, url_base: str = DEFAULT_URL_BASE
+    ) -> None:
+        """Initialize the Client with the provided TokenFetcher, gateway ID, and optional URL base."""
+        self.fetcher = fetcher
+        self.gateway = gateway
+        self.url_base = url_base
+        self.token = ""
+        self.snno = 0
+        self.session = self.get_client()
+
+        # to enable detailed logging add this to configuration.yaml:
+        # logger:
+        #   logs:
+        #     franklinwh: debug
+
+        self.logger = logging.getLogger("franklinwh")
+        self.logger.debug("Session class: %s", type(self.session))
+        if self.logger.isEnabledFor(logging.DEBUG):
+
+            async def debug_request(request: httpx.Request):
+                body = request.content
+                if body and request.headers.get("Content-Type", "").startswith(
+                    "application/json"
+                ):
+                    body = json.dumps(json.loads(body), ensure_ascii=False)
+                self.logger.debug(
+                    "Request: %s %s %s %s",
+                    request.method,
+                    request.url,
+                    request.headers,
+                    body,
+                )
+                return request
+
+            async def debug_response(response: httpx.Response):
+                await response.aread()
+                self.logger.debug(
+                    "Response: %s %s %s %s",
+                    response.status_code,
+                    response.url,
+                    response.headers,
+                    response.json(),
+                )
+                return response
+
+            self.session.event_hooks["request"].append(debug_request)
+            self.session.event_hooks["response"].append(debug_response)
+
+    # TODO(richo) Setup timeouts and deal with them gracefully.
+    async def _post(self, url, payload, params: dict | None = None):
+        if params is not None:
+            params = params.copy()
+            params.update({"gatewayId": self.gateway, "lang": "en_US"})
+
+        async def __post():
+            return (
+                await self.session.post(
+                    url,
+                    params=params,
+                    headers={
+                        "loginToken": self.token,
+                        "Content-Type": "application/json",
+                    },
+                    data=payload,
+                )
+            ).json()
+
+        return await retry(__post, lambda j: j["code"] != 401, self.refresh_token)
+
+    async def _post_form(self, url, payload):
+        async def __post():
+            return (
+                await self.session.post(
+                    url,
+                    headers={
+                        "loginToken": self.token,
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "optsource": "3",
+                    },
+                    data=payload,
+                )
+            ).json()
+
+        return await retry(__post, lambda j: j["code"] != 401, self.refresh_token)
+
+    async def _get(self, url, params: dict | None = None):
+        if params is None:
+            params = {}
+        else:
+            params = params.copy()
+        params.update({"gatewayId": self.gateway, "lang": "en_US"})
+
+        async def __get():
+            return (
+                await self.session.get(
+                    url, params=params, headers={"loginToken": self.token}
+                )
+            ).json()
+
+        return await retry(__get, lambda j: j["code"] != 401, self.refresh_token)
+
+    async def refresh_token(self):
+        """Refresh the authentication token using the TokenFetcher."""
+        self.token = await self.fetcher.get_token()
+
+    async def get_accessories(self):
+        """Get the list of accessories connected to the gateway."""
+        url = self.url_base + "hes-gateway/common/getAccessoryList"
+        # with no accessories this returns:
+        # {"code":200,"message":"Query success!","result":[],"success":true,"total":0}
+        return (await self._get(url))["result"]
+
+    async def get_smart_switch_state(self) -> SwitchState:
+        """Get the current state of the smart switches."""
+        # TODO(richo) This API is super in flux, both because of how vague the
+        # underlying API is and also trying to figure out what to do with
+        # inconsistency.
+        # Whether this should use the _switch_status() API is super unclear.
+        # Maybe I will reach out to FranklinWH once I have published.
+        status = await self._status()
+        switches = [x == 1 for x in status["pro_load"]]
+        return SwitchState(switches)
+
+    async def set_smart_switch_state(self, state: SwitchState):
+        """Set the state of the smart circuits.
+
+        Setting a value in the state tuple to True will turn on that circuit,
+        setting to False will turn it off. Setting to None will make it
+        unchanged.
+        """
+
+        payload = await self._switch_status()
+        payload["opt"] = 1
+        payload.pop("modeChoose")
+        payload.pop("result")
+
+        if payload["SwMerge"] == 1:
+            if state[0] != state[1]:
+                raise RuntimeError(
+                    "Smart switches 1 and 2 are merged! Setting them to different values could do bad things to your house. Aborting."
+                )
+
+        def set_value(keys, value):
+            for k in keys:
+                payload[k] = value
+
+        for i in range(3):
+            sw = i + 1
+            if state[i] is not None:
+                mode = f"Sw{sw}Mode"
+                msg_type = f"Sw{sw}MsgType"
+                pro_load = f"Sw{sw}ProLoad"
+
+                payload[msg_type] = 1
+                payload[mode] = int(bool(state[i]))
+                payload[pro_load] = payload[mode] ^ 1
+
+        wire_payload = self._build_payload(311, payload)
+        data = (await self._mqtt_send(wire_payload))["result"]["dataArea"]
+        return json.loads(data)
+
+    # Sends a 203 which is a high level status
+    async def _status(self):
+        payload = self._build_payload(203, {"opt": 1, "refreshData": 1})
+        data = (await self._mqtt_send(payload))["result"]["dataArea"]
+        return json.loads(data)
+
+    # Sends a 311 which appears to be a more specific switch command
+    async def _switch_status(self):
+        payload = self._build_payload(311, {"opt": 0, "order": self.gateway})
+        data = (await self._mqtt_send(payload))["result"]["dataArea"]
+        return json.loads(data)
+
+    # Sends a 353 which grabs real-time smart-circuit load information
+    # https://github.com/richo/homeassistant-franklinwh/issues/27#issuecomment-2714422732
+    async def _switch_usage(self):
+        payload = self._build_payload(353, {"opt": 0, "order": self.gateway})
+        data = (await self._mqtt_send(payload))["result"]["dataArea"]
+        return json.loads(data)
+
+    async def set_mode(self, mode):
+        """Set the operating mode of the FranklinWH gateway."""
+        # Time of use:
+        # currendId=9322&gatewayId=___&lang=EN_US&oldIndex=3&soc=15&stromEn=1&workMode=1
+
+        # Emergency Backup:
+        # currendId=9324&gatewayId=___&lang=EN_US&oldIndex=1&soc=100&stromEn=1&workMode=3
+
+        # Self consumption
+        # currendId=9323&gatewayId=___&lang=EN_US&oldIndex=2&soc=20&stromEn=1&workMode=2
+        settings = await self.get_tou_settings()
+        profile = settings["profiles"].get(mode.workMode)
+        if profile:
+            # Prefer the gateway's own values over the class constants: ids differ
+            # per account, and oldIndex ships alongside the profile that owns it.
+            mode.currendId = profile.get("id", mode.currendId)
+            if profile.get("oldIndex") is not None:
+                mode.oldIndex = profile["oldIndex"]
+        if mode.stromEn is None and settings["stromEn"] is not None:
+            mode.stromEn = settings["stromEn"]
+
+        url = DEFAULT_URL_BASE + "hes-gateway/terminal/tou/updateTouMode"
+        payload = mode.payload(self.gateway)
+        await self._post_form(url, payload)
+
+    async def get_tou_settings(self):
+        """Fetch the gateway's tou profile list, the active profile, and stromEn.
+
+        This is the authoritative source for everything set_mode() needs to send:
+        the profile ids are per-account (not the 9322/9323/9324 constants), oldIndex
+        differs per mode, and stromEn is the user's Storm Hedge setting.
+        """
+        url = self.url_base + "hes-gateway/terminal/tou/getGatewayTouListV2"
+        res = (await self._post(url, None, {"showType": 1})).get("result") or {}
+        active = res.get("currendId")
+        profiles = {m.get("workMode"): m for m in res.get("list", [])}
+        return {"active_id": active, "profiles": profiles, "stromEn": res.get("stromEn")}
+
+    async def get_mode(self):
+        """Get the current operating mode of the FranklinWH gateway.
+
+        Resolved from the tou list rather than a constant table: profile ids are
+        per-account, so mapping runingMode through MODE_MAP raises KeyError on any
+        gateway that does not happen to use 9322/9323/9324.
+        """
+        settings = await self.get_tou_settings()
+        for work_mode, profile in settings["profiles"].items():
+            if profile.get("id") == settings["active_id"]:
+                name = WORK_MODE_TO_NAME.get(work_mode)
+                if name is None:
+                    raise RuntimeError(f"Unknown workMode {work_mode}")
+                return (name, profile.get("soc"))
+        raise RuntimeError(f"Active profile {settings['active_id']} not in tou list")
+
+    async def get_stats(self) -> Stats:
+        """Get current statistics for the FHP.
+
+        This includes instantaneous measurements for current power, as well as totals for today (in local time)
+        """
+        tasks = [f() for f in [self.get_composite_info, self._switch_usage]]
+        info, sw_data = await asyncio.gather(*tasks)
+        # The API sometimes answers with result: null. Guard before indexing;
+        # upstream checks `data` one line too late and raises TypeError instead.
+        data = info.get("runtimeData") if info else None
+        if data is None:
+            raise InvalidDataException("getDeviceCompositeInfo returned no runtimeData")
+
+        grid_status: GridStatus = GridStatus.NORMAL
+        if "offgridreason" in data:
+            grid_status = GridStatus.from_offgridreason(data["offgridreason"])
+
+        return Stats(
+            Current(
+                data["p_sun"],
+                data["p_gen"],
+                data["genStat"] > 1,
+                data["p_fhp"],
+                data["p_uti"],
+                data["p_load"],
+                data["soc"],
+                sw_data["SW1ExpPower"],
+                sw_data["SW2ExpPower"],
+                sw_data["CarSWPower"],
+                grid_status,
+            ),
+            Totals(
+                data["kwh_fhp_chg"],
+                data["kwh_fhp_di"],
+                data["kwh_uti_in"],
+                data["kwh_uti_out"],
+                data["kwh_sun"],
+                data["kwh_gen"],
+                data["kwh_load"],
+                sw_data["SW1ExpEnergy"],
+                sw_data["SW2ExpEnergy"],
+                sw_data["CarSWExpEnergy"],
+                sw_data["CarSWImpEnergy"],
+            ),
+        )
+
+    def next_snno(self):
+        """Get the next sequence number for API requests."""
+        self.snno += 1
+        return self.snno
+
+    def _build_payload(self, ty, data):
+        raw = json.dumps(data, separators=(",", ":"))
+        blob = raw.encode("utf-8")
+        crc = to_hex(zlib.crc32(blob))
+        ts = int(time.time())
+
+        temp = json.dumps(
+            {
+                "lang": "EN_US",
+                "cmdType": ty,
+                "equipNo": self.gateway,
+                "type": 0,
+                "timeStamp": ts,
+                "snno": self.next_snno(),
+                "len": len(blob),
+                "crc": crc,
+                "dataArea": "DATA",
+            }
+        )
+        # We do it this way because without a canonical way to generate JSON we can't risk reordering breaking the CRC.
+        return temp.replace('"DATA"', raw)
+
+    async def _mqtt_send(self, payload):
+        url = DEFAULT_URL_BASE + "hes-gateway/terminal/sendMqtt"
+
+        res = await self._post(url, payload)
+        if res["code"] == 102:
+            raise DeviceTimeoutException(res["message"])
+        if res["code"] == 136:
+            raise GatewayOfflineException(res["message"])
+        if res["code"] == 181:
+            raise PermissionDeniedException(res["message"])
+        assert res["code"] == 200, f"{res['code']}: {res['message']}"
+        return res
+
+    async def set_grid_status(self, status: GridStatus, soc: int = 5):
+        """Set the grid status of the FranklinWH gateway.
+
+        Parameters
+        ----------
+        status : GridStatus
+            The desired grid status to set.
+        """
+        url = self.url_base + "hes-gateway/terminal/updateOffgrid"
+        payload = {
+            "gatewayId": self.gateway,
+            "offgridSet": int(status != GridStatus.NORMAL),
+            "offgridSoc": soc,
+        }
+        await self._post(url, json.dumps(payload))
+
+    async def get_export_settings(self) -> ExportSettings:
+        """Get the current grid export mode and power limit.
+
+        Returns:
+        -------
+        ExportSettings
+            The active export mode and optional kW cap.
+        """
+        url = self.url_base + "hes-gateway/terminal/tou/getPowerControlSetting"
+        result = (await self._get(url))["result"]
+        mode = ExportMode.from_flag(result["gridFeedMaxFlag"])
+        feed_max = result.get("gridFeedMax", -1.0)
+        limit_kw = None if feed_max < 0 else feed_max
+        return ExportSettings(mode=mode, limit_kw=limit_kw)
+
+    async def set_export_settings(
+        self, mode: ExportMode, limit_kw: float | None = None
+    ) -> None:
+        """Set the grid export mode and optional power limit.
+
+        Uses a read-modify-write pattern: the setPowerControlV2 endpoint
+        requires all existing settings to be echoed back alongside the
+        fields being changed.
+
+        Parameters
+        ----------
+        mode : ExportMode
+            The desired export mode.
+        limit_kw : float | None, optional
+            Export power cap in kW (0.1–10000.0). None means unlimited.
+            Ignored when mode is NO_EXPORT.
+        """
+        get_url = self.url_base + "hes-gateway/terminal/tou/getPowerControlSetting"
+        set_url = self.url_base + "hes-gateway/terminal/tou/setPowerControlV2"
+
+        # Read current settings — endpoint requires all fields posted back
+        current = (await self._get(get_url))["result"]
+
+        if mode == ExportMode.NO_EXPORT:
+            feed_max = 0.0
+            discharge_max = 0.0
+        elif mode == ExportMode.SOLAR_AND_APOWER:
+            feed_max = -1.0 if limit_kw is None else float(limit_kw)
+            discharge_max = -1.0
+        else:  # SOLAR_ONLY
+            feed_max = -1.0 if limit_kw is None else float(limit_kw)
+            discharge_max = 0.0
+
+        payload = {k: v for k, v in current.items() if v is not None}
+        payload.update({
+            "gatewayId": self.gateway,
+            "lang": "EN_US",
+            "gridFeedMaxFlag": mode.value,
+            "gridFeedMax": feed_max,
+            "globalGridDischargeMax": discharge_max,
+        })
+
+        res = await self.session.post(
+            set_url,
+            headers={"loginToken": self.token, "Content-Type": "application/json"},
+            data=json.dumps(payload),
+        )
+        res.raise_for_status()
+        body = res.json()
+        if body.get("code") != 200:
+            raise RuntimeError(f"set_export_settings failed: {body}")
+
+    async def set_mode_reserve(self, work_mode: int, soc: int) -> None:
+        """Set one mode's reserve SOC without switching to it (updateSocV2).
+
+        From richo/franklinwh-python#37. Emergency Backup reports
+        editSocFlag=false and the server rejects writes to it.
+        """
+        if work_mode not in WORK_MODE_TO_NAME:
+            raise ValueError(f"Invalid work_mode {work_mode!r}; expected one of {sorted(WORK_MODE_TO_NAME)}")
+        if not 0 <= soc <= 100:
+            raise ValueError(f"Invalid soc {soc!r}; expected 0-100")
+        url = self.url_base + "hes-gateway/terminal/tou/updateSocV2"
+        result = await self._post(
+            url, "", {"workMode": str(work_mode), "electricityType": "1", "soc": str(soc)}
+        )
+        if result.get("code") != 200:
+            raise InvalidDataException(f"set_mode_reserve failed: {result}")
+
+    async def get_composite_info(self):
+        """Get composite information about the FranklinWH gateway."""
+        url = self.url_base + "hes-gateway/terminal/getDeviceCompositeInfo"
+        params = {"refreshFlag": 1}
+        return (await self._get(url, params))["result"]
+
+    async def set_generator(self, enabled: bool):
+        """Enable or disable the generator on the FranklinWH gateway.
+
+        Parameters
+        ----------
+        enabled : bool
+            True to enable the generator, False to disable it.
+        """
+        url = self.url_base + "hes-gateway/terminal/updateIotGenerator"
+        payload = {"manuSw": 1 + int(enabled), "gatewayId": self.gateway, "opt": 1}
+        await self._post(url, json.dumps(payload))
+
+    async def get_home_gateway_list(self):
+        """Get the list of Home Gateways associated with the account.
+
+        Returns:
+        -------
+        JSON payload containing the list of Home Gateway information
+        - email account linked (binded), location, timezone, etc.
+        - number of aGates, status (online/offline), model, firmware version, etc
+        - connectivity type (4G/WiFi/Ethernet), etc
+        """
+        url = DEFAULT_URL_BASE + "hes-gateway/terminal/getHomeGatewayList"
+        return (await self._get(url))["result"]
+
+
+class UnknownMethodsClient(Client):
+    """A client that also implements some methods that don't obviously work, for research purposes."""
+
+    async def get_controllable_loads(self):
+        """Get the list of controllable loads connected to the gateway."""
+        url = (
+            self.url_base
+            + "hes-gateway/terminal/selectTerGatewayControlLoadByGatewayId"
+        )
+        params = {"id": self.gateway, "lang": "en_US"}
+        headers = {"loginToken": self.token}
+        res = await self.session.get(url, params=params, headers=headers)
+        return res.json()
+
+    async def get_accessory_list(self):
+        """Get the list of accessories connected to the gateway."""
+        url = self.url_base + "hes-gateway/terminal/getIotAccessoryList"
+        params = {"gatewayId": self.gateway, "lang": "en_US"}
+        headers = {"loginToken": self.token}
+        res = await self.session.get(url, params=params, headers=headers)
+        return res.json()
+

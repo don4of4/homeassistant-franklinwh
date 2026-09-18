@@ -12,7 +12,7 @@ from conftest import run
 
 from homeassistant.exceptions import HomeAssistantError
 
-from franklin_wh import select as select_mod
+from custom_components.franklin_wh import select as select_mod
 
 
 class FakeClient:
@@ -79,6 +79,17 @@ def test_each_mode_reads_its_own_reserve():
         assert client.modes_set[0].soc == expected, option
 
 
+def test_tou_profile_reserve_takes_precedence_over_switch_status():
+    """The TOU list is authoritative; _switch_status is only the fallback."""
+    class TouClient(FakeClient):
+        async def get_tou_settings(self):
+            return {"active_id": 9, "profiles": {2: {"id": 9, "soc": 41.0}}, "stromEn": 0}
+
+    client = TouClient(DEVICE)  # _switch_status still says selfMinSoc=33
+    run(make_entity(client, "time_of_use").async_select_option("self_consumption"))
+    assert client.modes_set[0].soc == 41
+
+
 def test_refuses_to_write_when_the_reserve_is_unreadable():
     """Better to fail loudly than to overwrite the reserve with a guess."""
     client = FakeClient({"runingMode": 75616})  # no reserve fields at all
@@ -116,5 +127,6 @@ def test_payload_still_carries_the_soc_we_chose():
     run(make_entity(client, "time_of_use").async_select_option("self_consumption"))
     payload = client.modes_set[0].payload("GW1")
     assert payload["soc"] == "33"
-    # Documents the upstream bug we warn about: Storm Hedge is forced on.
+    # A bare Mode defaults stromEn to "1"; the real set_mode fills it from the
+    # gateway's TOU settings first (covered in test_api_client.py).
     assert payload["stromEn"] == "1"

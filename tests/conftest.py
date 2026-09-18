@@ -1,8 +1,7 @@
 """Test bootstrap.
 
-The repo root *is* the integration package (hacs.json content_in_root), so it
-has to be importable as `franklin_wh` for its relative imports to resolve.
-Symlink it under a temp dir and put that on sys.path.
+The integration lives at custom_components/franklin_wh, so putting the repo
+root on sys.path makes it importable exactly as Home Assistant sees it.
 
 Run with tools/run-tests.sh, which uses the Home Assistant image — it already
 provides homeassistant, voluptuous, franklinwh and pytest. There is no
@@ -11,18 +10,13 @@ rather than an async plugin.
 """
 
 import asyncio
-import os
 import pathlib
 import sys
-import tempfile
 
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-_PARENT = pathlib.Path(tempfile.mkdtemp(prefix="franklin_wh_pkg_"))
-if not (_PARENT / "franklin_wh").exists():
-    os.symlink(ROOT, _PARENT / "franklin_wh")
-sys.path.insert(0, str(_PARENT))
+sys.path.insert(0, str(ROOT))  # makes `custom_components.franklin_wh` importable
 
 
 def run(coro):

@@ -10,7 +10,7 @@ from conftest import run
 
 from homeassistant.helpers.update_coordinator import UpdateFailed
 
-from franklin_wh import sensor as sensor_mod
+from custom_components.franklin_wh import sensor as sensor_mod
 
 
 class FakeClient:

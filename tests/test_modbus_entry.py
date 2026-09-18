@@ -5,7 +5,7 @@ from conftest import FakeEntry, run
 
 from homeassistant.exceptions import ConfigEntryError
 
-from franklin_wh import modbus as modbus_mod
+from custom_components.franklin_wh import modbus as modbus_mod
 
 
 def test_missing_host_raises_config_entry_error():

@@ -6,11 +6,6 @@
 # integration plus the tests into it and run there — no installs, works offline.
 # Override with FWH_CONTAINER=<name>. Set DOCKER=podman if you use podman.
 #
-# Note: never run pytest with the repo root as the working directory. This repo
-# ships select.py at the top level (hacs.json content_in_root), which shadows
-# Python's stdlib `select` module and breaks the interpreter on import. The
-# tests are run from a neutral directory, and tests/conftest.py imports the
-# integration as the package `franklin_wh` via a symlink instead.
 set -eu
 
 DOCKER="${DOCKER:-docker}"
@@ -26,11 +21,6 @@ if ! $DOCKER inspect "$CONTAINER" >/dev/null 2>&1; then
 fi
 
 $DOCKER exec "$CONTAINER" sh -c "rm -rf $DEST && mkdir -p $DEST"
-for f in __init__.py sensor.py select.py number.py modbus.py switch.py \
-         config_flow.py manifest.json strings.json; do
-    $DOCKER cp "$REPO/$f" "$CONTAINER:$DEST/$f" >/dev/null
-done
+$DOCKER cp "$REPO/custom_components" "$CONTAINER:$DEST/custom_components" >/dev/null
 $DOCKER cp "$REPO/tests" "$CONTAINER:$DEST/tests" >/dev/null
-
-# -w /tmp keeps the repo root off sys.path (see note above).
-$DOCKER exec -w /tmp "$CONTAINER" python -m pytest "$DEST/tests" -q "$@"
+$DOCKER exec -w "$DEST" "$CONTAINER" python -m pytest tests -q "$@"

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import timedelta
 import logging
 
-import franklinwh
+from . import api as franklinwh
 import voluptuous as vol
 
 from homeassistant.components.select import (
@@ -59,6 +59,9 @@ _MODE_FACTORIES = {
     "emergency_backup": franklinwh.Mode.emergency_backup,
 }
 
+# Operating-mode name -> workMode integer (1=TOU, 2=self consumption, 3=backup).
+_WORK_MODE_BY_NAME = {name: wm for wm, name in franklinwh.WORK_MODE_TO_NAME.items()}
+
 _MODE_SOC_KEYS = {
     "self_consumption": "selfMinSoc",
     "time_of_use": "touMinSoc",
@@ -96,6 +99,14 @@ async def _read_operating_mode(client) -> tuple[str | None, int | None]:
     Returns (mode_name, reserve_soc).
     """
     soc_key_map = _MODE_SOC_KEYS
+
+    # Authoritative: the TOU profile list (getGatewayTouListV2). The active
+    # profile's workMode is stable across firmware, unlike runingMode below.
+    try:
+        mode, reserve = await client.get_mode()
+        return mode, (int(reserve) if reserve is not None else None)
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.debug("get_mode via tou list failed (%s) — trying _status", err)
 
     # Primary: human-readable name from high-level status
     try:
@@ -155,6 +166,14 @@ async def _read_reserve_for_mode(client, mode: str) -> int | None:
     mode's own value back out preserves it, and works even when runingMode is
     unrecognised — the reserve fields are readable regardless.
     """
+    try:
+        settings = await client.get_tou_settings()
+        profile = settings["profiles"].get(_WORK_MODE_BY_NAME[mode]) or {}
+        if profile.get("soc") is not None:
+            return int(profile["soc"])
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.debug("get_tou_settings failed (%s) — trying _switch_status", err)
+
     key = _MODE_SOC_KEYS[mode]
     sw = await client._switch_status()
     value = sw.get(key)
@@ -376,8 +395,6 @@ class OperatingModeSelect(FranklinSelectBase):
             raise HomeAssistantError(f"Unknown operating mode: {option}")
 
         if option == self.current_option:
-            # Every set_mode also forces Storm Hedge on (see below), so do not
-            # write at all when there is nothing to change.
             _LOGGER.debug("Operating mode already %s — not writing", option)
             return
 
@@ -391,14 +408,9 @@ class OperatingModeSelect(FranklinSelectBase):
                 "it would overwrite your reserve SOC with a default."
             )
 
-        _LOGGER.warning(
-            "Changing operating mode to %s (reserve SOC %s%%). Note: this also "
-            "enables Storm Hedge — franklinwh's Mode.payload() hardcodes "
-            "stromEn=1, so every mode change turns it on. Re-disable it in the "
-            "FranklinWH app if you had it off.",
-            option,
-            soc,
-        )
+        # set_mode reads the gateway's TOU settings and carries the profile id,
+        # oldIndex and Storm Hedge (stromEn) through, so nothing else changes.
+        _LOGGER.info("Changing operating mode to %s (reserve SOC %s%%)", option, soc)
         mode = factory(soc=soc)
         await self._client.set_mode(mode)
         # Optimistically update local state — the device takes a moment to

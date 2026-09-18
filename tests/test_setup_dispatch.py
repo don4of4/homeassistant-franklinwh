@@ -8,8 +8,8 @@ and produced no entities at all.
 import pytest
 from conftest import run
 
-from franklin_wh import modbus as modbus_mod
-from franklin_wh import sensor as sensor_mod
+from custom_components.franklin_wh import modbus as modbus_mod
+from custom_components.franklin_wh import sensor as sensor_mod
 
 
 @pytest.fixture

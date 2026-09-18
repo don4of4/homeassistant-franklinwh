@@ -6,7 +6,7 @@ import logging
 import time
 from typing import Any
 
-import franklinwh
+from . import api as franklinwh
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PORT, Platform

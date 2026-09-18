@@ -21,12 +21,8 @@ jobs:
           python-version: "3.13"
 
       - name: Install dependencies
-        run: pip install homeassistant pytest "franklinwh==2026.3.*"
+        run: pip install homeassistant pytest
 
-      # Run from a neutral directory: this repo ships select.py at the top
-      # level, which shadows Python's stdlib `select` if the repo root ends up
-      # on sys.path. tests/conftest.py imports the integration as the package
-      # `franklin_wh` via a symlink.
       - name: Run tests
-        working-directory: /tmp
-        run: python -m pytest "$GITHUB_WORKSPACE/src/tests" -q
+        working-directory: src
+        run: python -m pytest tests -q

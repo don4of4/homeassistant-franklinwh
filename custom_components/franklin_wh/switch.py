@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-import franklinwh
+from . import api as franklinwh
 
 from homeassistant.components.switch import (
     SwitchEntity,

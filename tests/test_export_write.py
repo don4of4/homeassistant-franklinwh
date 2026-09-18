@@ -10,7 +10,7 @@ from conftest import run
 
 from homeassistant.exceptions import HomeAssistantError
 
-from franklin_wh import select as select_mod
+from custom_components.franklin_wh import select as select_mod
 
 
 class FakeClient:
