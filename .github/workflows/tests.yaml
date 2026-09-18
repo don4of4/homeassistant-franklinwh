@@ -1,6 +1,3 @@
-# CI workflow for the test suite. Copy to .github/workflows/tests.yaml.
-# Kept here as an example because the token used to push this repo has no
-# `workflow` scope and GitHub rejects pushes that add workflow files.
 name: Tests
 
 on:

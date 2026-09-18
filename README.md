@@ -43,7 +43,7 @@ Grid and battery power are signed 16-bit registers on the aGate, so anything abo
 Tests run inside a Home Assistant container, which already has every dependency:
 
 ```sh
-tools/run-tests.sh            # FWH_CONTAINER=<name> to pick a container
+tools/run-tests.sh            # FWH_CONTAINER=<name> to pick a container; CI runs the same suite
 ```
 
 The client under `api/` is synced by diffing against the upstream commit noted in its `__init__.py`. Nothing in this integration calls the installer-only `/manage/` endpoints; please keep it that way — probing them got an account disassociated from its device.
