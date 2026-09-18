@@ -19,7 +19,7 @@ _LOGGER = logging.getLogger(__name__)
 DOMAIN = "franklin_wh"
 
 PLATFORMS_MODBUS = [Platform.SENSOR]
-PLATFORMS_CLOUD = [Platform.SENSOR, Platform.SELECT, Platform.NUMBER]
+PLATFORMS_CLOUD = [Platform.SENSOR, Platform.SELECT, Platform.NUMBER, Platform.SWITCH]
 
 # Rate limit circuit breaker
 _RATE_LIMIT_KEY = "rate_limit_until"
@@ -95,7 +95,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
     elif conn_type == "both":
         await hass.config_entries.async_forward_entry_setups(
-            entry, [Platform.SENSOR, Platform.SELECT, Platform.NUMBER]
+            entry, PLATFORMS_CLOUD
         )
     else:
         await hass.config_entries.async_forward_entry_setups(
@@ -111,7 +111,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if conn_type == "modbus":
         platforms = PLATFORMS_MODBUS
     elif conn_type == "both":
-        platforms = [Platform.SENSOR, Platform.SELECT, Platform.NUMBER]
+        platforms = PLATFORMS_CLOUD
     else:
         platforms = PLATFORMS_CLOUD
     return await hass.config_entries.async_unload_platforms(entry, platforms)
