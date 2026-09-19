@@ -10,6 +10,8 @@ This is the maintained continuation of [richo/homeassistant-franklinwh](https://
 
 HACS → Integrations → ⋮ → Custom repositories → add `https://github.com/don4of4/homeassistant-franklinwh` as an Integration. Install, restart Home Assistant, then Settings → Devices & Services → Add Integration → FranklinWH.
 
+**Updating from 2026.8.0 or earlier:** the repository layout changed. If HACS reports "no manifest.json found", open the integration in HACS → ⋮ → **Update information**, then update again.
+
 ## Connection types
 
 | | Local (Modbus) | Cloud | Local + Cloud |

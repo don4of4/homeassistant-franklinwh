@@ -7,7 +7,6 @@ from datetime import timedelta
 import logging
 
 from . import api as franklinwh
-import httpx
 import voluptuous as vol
 
 from homeassistant.components.sensor import (
@@ -242,41 +241,33 @@ async def _fetch_stats(
     transient condition whatever the library does with it.
     """
     _LOGGER.debug("Fetching latest data from FranklinWH")
+    last_error = None
     for attempt in range(retries):
         if attempt > 0:
-            _LOGGER.warning("Trying again")
             await asyncio.sleep(delay)
         try:
             data = await client.get_stats()
-        except franklinwh.client.DeviceTimeoutException as e:
-            _LOGGER.warning("Error getting data from FranklinWH - Device Timeout: %s", e)
-        except franklinwh.client.GatewayOfflineException as e:
-            _LOGGER.warning("Error getting data from FranklinWH - Gateway Offline %s", e)
-        except franklinwh.client.AccountLockedException as e:
-            _LOGGER.warning("Error getting data from FranklinWH - Account Locked %s", e)
-        except franklinwh.client.InvalidCredentialsException as e:
-            _LOGGER.warning("Error getting data from FranklinWH - Invalid Credentials %s", e)
-        except franklinwh.client.InvalidDataException as e:
-            _LOGGER.warning("Error getting data from FranklinWH - Invalid Body Returned %s", e)
-        except httpx.ReadTimeout as e:
-            _LOGGER.warning("Timeout fetching data from FranklinWH: %s", e)
         except Exception as e:  # noqa: BLE001 - see docstring
-            _LOGGER.warning(
-                "Error getting data from FranklinWH - %s", describe_exception(e)
-            )
+            # Per-attempt failures are routine (null replies, timeouts) and
+            # were logging 4 warnings per blip. Keep them at debug; only the
+            # final outcome is worth a warning.
+            last_error = describe_exception(e)
+            _LOGGER.debug("Attempt %d/%d failed: %s", attempt + 1, retries, last_error)
         else:
             if attempt > 0:
-                _LOGGER.warning("Successfully fetched data from FranklinWH after retry")
-            else:
-                _LOGGER.debug("Fetched latest data from FranklinWH: %s", data)
+                _LOGGER.debug("Fetched data on attempt %d/%d", attempt + 1, retries)
             cache.store(data)
             return data
 
-    _LOGGER.warning("Failed to fetch data from FranklinWH after %s attempts", retries)
-
     if tolerate_stale_data and cache.is_populated():
+        _LOGGER.warning(
+            "Could not fetch data from FranklinWH after %d attempts (%s); "
+            "serving the last good value",
+            retries, last_error,
+        )
         return cache.data()
 
+    _LOGGER.warning("Failed to fetch data from FranklinWH after %d attempts (%s)", retries, last_error)
     raise UpdateFailed(f"Failed to fetch data from FranklinWH after {retries} attempts.")
 
 

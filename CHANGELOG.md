@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026.10.1
+- Cloud retries log at debug; a warning only when every attempt fails. Fixes the empty "Timeout fetching data:" message.
+- README: HACS "Update information" note for installs coming from 2026.8.0 or earlier.
+
 ## 2026.10.0
 - Smart-circuit switches for UI setups: one per circuit, named from the gateway; merged circuits 1+2 become one entity. Closes #4.
 
