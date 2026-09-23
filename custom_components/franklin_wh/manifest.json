@@ -7,9 +7,9 @@
   "config_flow": true,
   "dependencies": [],
   "documentation": "https://github.com/don4of4/homeassistant-franklinwh",
-  "iot_class": "local_polling",
   "integration_type": "hub",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/don4of4/homeassistant-franklinwh/issues",
   "requirements": [],
-  "version": "2026.11.0",
-  "issue_tracker": "https://github.com/don4of4/homeassistant-franklinwh/issues"
+  "version": "2026.11.0"
 }
