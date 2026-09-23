@@ -22,7 +22,8 @@
         "data": {
           "username": "Email",
           "password": "Password",
-          "gateway_id": "Gateway ID"
+          "gateway_id": "Gateway ID",
+          "prefix": "Entity name prefix"
         }
       }
     },

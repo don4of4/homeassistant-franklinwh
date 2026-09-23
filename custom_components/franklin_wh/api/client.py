@@ -456,6 +456,12 @@ class TokenFetcher(HttpClientFactory):
         self.username = username
         self.password = password
         self.info: dict | None = None
+        # The most recent token this fetcher issued. Clients sharing one
+        # fetcher (several gateways on one account) adopt it instead of
+        # logging in again - a fresh login invalidates the previous token,
+        # so independent logins per gateway ping-pong each other into 401s
+        # (richo/homeassistant-franklinwh#87).
+        self.token: str | None = None
 
     async def get_token(self):
         """Fetch a new authentication token using the stored credentials.
@@ -463,7 +469,8 @@ class TokenFetcher(HttpClientFactory):
         Store the intermediate account information in self.info.
         """
         self.info = await self.fetch_token()
-        return self.info["token"]
+        self.token = self.info["token"]
+        return self.token
 
     @staticmethod
     async def login(username: str, password: str):
@@ -610,7 +617,17 @@ class Client(HttpClientFactory):
         return await retry(__get, lambda j: j["code"] != 401, self.refresh_token)
 
     async def refresh_token(self):
-        """Refresh the authentication token using the TokenFetcher."""
+        """Refresh the authentication token using the TokenFetcher.
+
+        If another client on the same fetcher has already logged in since we
+        last did, that token is still valid and ours is the one that was
+        invalidated - adopt it rather than logging in again (which would in
+        turn invalidate theirs).
+        """
+        shared = self.fetcher.token
+        if shared and shared != self.token:
+            self.token = shared
+            return
         self.token = await self.fetcher.get_token()
 
     async def get_accessories(self):

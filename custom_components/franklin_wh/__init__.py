@@ -77,6 +77,18 @@ def describe_exception(err: BaseException) -> str:
     return f"{type(err).__name__}: {text}" if text else type(err).__name__
 
 
+DEFAULT_PREFIX = "FranklinWH"
+
+
+def entry_prefix(entry: ConfigEntry) -> str:
+    """Entity-name prefix for a config entry.
+
+    Optional in the cloud step so a second gateway on one account can be told
+    apart; entries created before it existed have no key and keep the default.
+    """
+    return entry.data.get("prefix") or DEFAULT_PREFIX
+
+
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the FranklinWH integration (legacy YAML support)."""
     hass.data.setdefault(DOMAIN, {})
@@ -129,11 +141,13 @@ async def get_shared_client(
     """Return a shared FranklinWH Client for the given gateway.
 
     One client per gateway, reused by every cloud platform (sensor, select,
-    number). Each client owns a TokenFetcher, and each TokenFetcher logs in
-    independently - so a platform that builds its own client costs an extra
-    login on every restart. This account locks after 3 bad attempts and has
-    been disassociated once already, so logins are treated as a scarce
-    resource.
+    number, switch), and one TokenFetcher per account, shared by every
+    gateway on it. A login invalidates the account's previous token, so two
+    gateways each logging in on their own knock each other out in a loop of
+    401s (richo/homeassistant-franklinwh#87); with a shared fetcher the
+    second client adopts the first one's token instead. This account also
+    locks after 3 bad attempts and has been disassociated once already, so
+    logins are treated as a scarce resource.
     """
     hass.data.setdefault(DOMAIN, {})
     key = f"client_{gateway}"
@@ -142,7 +156,11 @@ async def get_shared_client(
         _LOGGER.debug("Creating shared FranklinWH client for gateway %s", gateway)
         from .sensor import supports_http2  # noqa: PLC0415
 
-        fetcher = franklinwh.TokenFetcher(username, password)
+        fetcher_key = f"fetcher_{username}"
+        fetcher = hass.data[DOMAIN].get(fetcher_key)
+        if fetcher is None:
+            fetcher = franklinwh.TokenFetcher(username, password)
+            hass.data[DOMAIN][fetcher_key] = fetcher
         if supports_http2():
             # pylint: disable=no-name-in-module,import-outside-toplevel
             from homeassistant.helpers.httpx_client import (  # noqa: PLC0415

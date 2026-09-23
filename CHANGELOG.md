@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026.11.0
+- Two gateways on one account no longer log each other out: one login is shared per account, and a client adopts the newer token instead of re-logging in. Fixes the 401 loop behind richo/homeassistant-franklinwh#87 and the two-battery instability in #78.
+- Circuit 3 gets `Switch 3 Load` and `Switch 3 Lifetime Use`. The gateway reports it as the car/V2L switch, so these carry the same values as `V2L Use` and `V2L Export`. richo/homeassistant-franklinwh#83.
+- Cloud setup has an optional entity name prefix (default `FranklinWH`), so a second gateway can be told apart.
+
 ## 2026.10.1
 - Cloud retries log at debug; a warning only when every attempt fails. Fixes the empty "Timeout fetching data:" message.
 - README: HACS "Update information" note for installs coming from 2026.8.0 or earlier.

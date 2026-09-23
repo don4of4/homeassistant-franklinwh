@@ -206,6 +206,7 @@ class FranklinWHConfigFlow(ConfigFlow, domain=DOMAIN):
             username = user_input[CONF_USERNAME]
             password = user_input[CONF_PASSWORD]
             gateway = user_input["gateway_id"]
+            prefix = (user_input.get("prefix") or "").strip() or "FranklinWH"
 
             valid = await _test_cloud(username, password, gateway)
             if not valid:
@@ -230,6 +231,7 @@ class FranklinWHConfigFlow(ConfigFlow, domain=DOMAIN):
                             "serial": serial,
                             "model": info.get("model", ""),
                             "firmware": info.get("version", ""),
+                            "prefix": prefix,
                         },
                     )
 
@@ -240,6 +242,7 @@ class FranklinWHConfigFlow(ConfigFlow, domain=DOMAIN):
                         CONF_USERNAME: username,
                         CONF_PASSWORD: password,
                         "gateway_id": gateway,
+                        "prefix": prefix,
                     },
                 )
 
@@ -250,6 +253,7 @@ class FranklinWHConfigFlow(ConfigFlow, domain=DOMAIN):
                     vol.Required(CONF_USERNAME): str,
                     vol.Required(CONF_PASSWORD): str,
                     vol.Required("gateway_id"): str,
+                    vol.Optional("prefix", default="FranklinWH"): str,
                 }
             ),
             errors=errors,

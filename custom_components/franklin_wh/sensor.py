@@ -30,7 +30,7 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant
 
-from . import describe_exception
+from . import describe_exception, entry_prefix
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
@@ -125,7 +125,7 @@ async def async_setup_entry(
             entry.data[CONF_USERNAME],
             entry.data[CONF_PASSWORD],
             entry.data.get("gateway_id") or entry.data.get("serial", ""),
-            "FranklinWH",
+            entry_prefix(entry),
             # Cloud-only entries carry gateway_id but no serial, so falling
             # back keeps entities registry-tracked (renameable, assignable to
             # an area) instead of silently unique_id-less.
@@ -197,6 +197,8 @@ _CLOUD_ONLY_SENSOR_CLASSES = (
     "Sw1UseSensor",
     "Sw2LoadSensor",
     "Sw2UseSensor",
+    "Sw3LoadSensor",
+    "Sw3UseSensor",
     "V2LUseSensor",
     "V2LExportSensor",
     "V2LImportSensor",
@@ -648,6 +650,46 @@ class Sw2UseSensor(FranklinSensor):
     def native_value(self):
         """Value."""
         return self.coordinator.data.totals.switch_2_use
+
+
+class Sw3LoadSensor(FranklinSensor):
+    """Shows the current power use by switch 3.
+
+    The gateway reports circuit 3 as the "car switch" (CarSWPower in the 353
+    reply) because that is the one wired for V2L; on a system without V2L it
+    is an ordinary smart circuit. Same value as V2L Use, named so it can be
+    found alongside switches 1 and 2 (richo/homeassistant-franklinwh#83).
+    """
+
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator, prefix, unique_id) -> None:
+        """Initializer."""
+        super().__init__(coordinator, prefix, unique_id, "_switch_3_load")
+
+    @property
+    def native_value(self):
+        """Value."""
+        return self.coordinator.data.current.v2l_use
+
+
+class Sw3UseSensor(FranklinSensor):
+    """Shows the lifetime energy delivered through switch 3 (CarSWExpEnergy)."""
+
+    _attr_native_unit_of_measurement = UnitOfEnergy.WATT_HOUR
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+
+    def __init__(self, coordinator, prefix, unique_id) -> None:
+        """Initializer."""
+        super().__init__(coordinator, prefix, unique_id, "_switch_3_lifetime_use")
+
+    @property
+    def native_value(self):
+        """Value."""
+        return self.coordinator.data.totals.v2l_export
 
 
 class V2LUseSensor(FranklinSensor):

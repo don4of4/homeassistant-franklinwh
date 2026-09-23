@@ -31,6 +31,10 @@ Local (Modbus): battery SOC, grid / home / battery / solar power, grid voltage a
 
 Cloud: the energy totals (grid import/export, home use, solar, battery charge/discharge, switch and V2L totals), generator and switch power, plus the controls — operating mode, export mode, export limit, and a switch per smart circuit (named as in the app). In Local + Cloud, the live power sensors come from Modbus only.
 
+Circuit 3 is the one FranklinWH wires for V2L, and the gateway reports it as the car switch, so `Switch 3 Load` / `Switch 3 Lifetime Use` carry the same values as `V2L Use` / `V2L Export`. `V2L Import` is only meaningful with a V2L-capable vehicle.
+
+**Two gateways on one account:** add each gateway as its own entry and give the second one a different entity name prefix in the cloud step. The login is shared across entries; a fresh login invalidates the previous token, so independent logins per gateway would loop on 401s.
+
 Grid and battery power are signed 16-bit registers on the aGate, so anything above 32.767 kW wraps; the integration resolves that against the energy balance.
 
 ## Troubleshooting

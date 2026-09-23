@@ -30,7 +30,7 @@ from homeassistant.helpers.update_coordinator import (
 )
 
 from . import api as franklinwh
-from . import describe_exception
+from . import describe_exception, entry_prefix
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -99,7 +99,7 @@ async def async_setup_entry(
     layout = await _async_read_circuit_layout(client)
     async_add_entities(
         [
-            SmartCircuitSwitch(coordinator, client, "FranklinWH", unique_id, name, indices)
+            SmartCircuitSwitch(coordinator, client, entry_prefix(entry), unique_id, name, indices)
             for name, indices in layout
         ]
     )

@@ -21,7 +21,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 
-from . import describe_exception
+from . import describe_exception, entry_prefix
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
@@ -251,7 +251,7 @@ async def async_setup_entry(
         entry.data[CONF_USERNAME],
         entry.data[CONF_PASSWORD],
         entry.data.get("gateway_id") or entry.data.get("serial", ""),
-        "FranklinWH",
+        entry_prefix(entry),
         # Cloud-only entries carry gateway_id but no serial, so falling back
         # keeps entities registry-tracked (renameable, assignable to an area)
         # instead of silently unique_id-less.

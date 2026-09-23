@@ -384,7 +384,9 @@ async def async_setup_entry(
     serial = entry.data.get("serial", "")
     model = entry.data.get("model", "")
 
-    prefix = "FranklinWH"
+    from . import entry_prefix  # noqa: PLC0415
+
+    prefix = entry_prefix(entry)
     update_interval = timedelta(seconds=DEFAULT_UPDATE_INTERVAL)
 
     coordinator = _create_coordinator(hass, host, port, update_interval)

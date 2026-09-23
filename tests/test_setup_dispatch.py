@@ -24,7 +24,7 @@ def calls(monkeypatch):
                          interval, *, tolerate_stale_data, skip_modbus_duplicates):
         seen["cloud"].append(
             {"gateway": gateway, "unique_id": unique_id, "username": username,
-             "skip_modbus_duplicates": skip_modbus_duplicates}
+             "prefix": prefix, "skip_modbus_duplicates": skip_modbus_duplicates}
         )
 
     monkeypatch.setattr(modbus_mod, "async_setup_entry", fake_modbus)
@@ -74,3 +74,18 @@ def test_cloud_only_entities_get_a_unique_id(calls, cloud_entry):
 def test_hybrid_prefers_serial_for_unique_id(calls, both_entry):
     run(sensor_mod.async_setup_entry(None, both_entry, None))
     assert calls["cloud"][0]["unique_id"] == "SN987654321"
+
+
+def test_entry_without_prefix_keeps_the_default_name(calls, cloud_entry):
+    """Entries created before the prefix field existed must not be renamed."""
+    run(sensor_mod.async_setup_entry(None, cloud_entry, None))
+    assert calls["cloud"][0]["prefix"] == "FranklinWH"
+
+
+def test_entry_prefix_names_a_second_gateway(calls):
+    from conftest import FakeEntry
+
+    entry = FakeEntry({"username": "u", "password": "p", "gateway_id": "GW2",
+                       "prefix": "Barn"})
+    run(sensor_mod.async_setup_entry(None, entry, None))
+    assert calls["cloud"][0]["prefix"] == "Barn"
