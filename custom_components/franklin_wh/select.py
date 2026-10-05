@@ -20,7 +20,7 @@ from homeassistant.const import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
 from . import describe_exception, entry_prefix
 from .local import LocalGateway, LocalGatewayError, active_mode, available_modes
@@ -414,6 +414,20 @@ class OperatingModeSelect(FranklinSelectBase):
         self._local = local
 
     @property
+    def options(self) -> list[str]:
+        """Offer only the modes this gateway has a programme for.
+
+        Known only when the mode came from the local connection; otherwise all
+        three are offered as before. The active mode is always included so the
+        entity never reports a state outside its own options.
+        """
+        available = (self.coordinator.data or {}).get("available_modes")
+        if not available:
+            return OPERATING_MODES
+        current = self.current_option
+        return [m for m in OPERATING_MODES if m in available or m == current]
+
+    @property
     def extra_state_attributes(self) -> dict:
         """Say which connection the mode came from and what the gateway offers."""
         data = self.coordinator.data or {}
@@ -453,7 +467,9 @@ class OperatingModeSelect(FranklinSelectBase):
                 await self._local.set_mode(option)
             except LocalGatewayError as err:
                 if err.stage == "unsupported":
-                    raise HomeAssistantError(
+                    # A user-input problem, not a fault: no stack trace, and
+                    # the UI shows the sentence as written.
+                    raise ServiceValidationError(
                         f"Cannot switch to {option}: this aGate has no programme "
                         "for that mode. Add it in the FranklinWH app first."
                     ) from err

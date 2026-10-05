@@ -195,3 +195,29 @@ def test_attributes_say_where_the_mode_came_from():
     assert entity.extra_state_attributes == {
         "mode_source": "local", "available_modes": ["time_of_use"],
     }
+
+
+def test_only_modes_the_gateway_has_are_offered():
+    """Don's aGate has no Self Consumption programme; offering it is a dead end."""
+    entity = make_entity(FakeCloud(), FakeLocal())
+    entity.coordinator.data["available_modes"] = ["emergency_backup", "time_of_use"]
+    assert entity.options == ["time_of_use", "emergency_backup"]
+
+
+def test_the_active_mode_is_always_among_the_options():
+    entity = make_entity(FakeCloud(), FakeLocal(), current="self_consumption")
+    entity.coordinator.data["available_modes"] = ["time_of_use"]
+    assert "self_consumption" in entity.options
+
+
+def test_all_modes_are_offered_when_availability_is_unknown():
+    entity = make_entity(FakeCloud(), None)
+    assert entity.options == select_mod.OPERATING_MODES
+
+
+def test_missing_programme_is_reported_as_a_validation_error():
+    from homeassistant.exceptions import ServiceValidationError
+
+    local = FakeLocal(set_error=LocalGatewayError("unsupported", "none"))
+    with pytest.raises(ServiceValidationError):
+        run(make_entity(FakeCloud(), local).async_select_option("self_consumption"))

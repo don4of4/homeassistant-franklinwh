@@ -11,5 +11,5 @@
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/don4of4/homeassistant-franklinwh/issues",
   "requirements": [],
-  "version": "2026.12.0"
+  "version": "2026.12.1"
 }

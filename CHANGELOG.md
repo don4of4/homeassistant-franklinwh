@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026.12.1
+- `Operating Mode` only offers the modes your gateway has a programme for (known when the mode is read locally).
+- Choosing a mode the gateway lacks is a validation error with a plain message, not a server error.
+
 ## 2026.12.0
 - Local + Cloud: the operating mode is now read and changed on the aGate itself (TCP 9000), with the cloud as fallback. Mode changes no longer need the FranklinWH login, which was returning errors from 2026-10-03.
 - A local change selects the gateway's own programme, so reserves are untouched, and is confirmed by a fresh read before it is reported.
