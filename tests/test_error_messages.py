@@ -65,4 +65,6 @@ def test_successful_read_returns_all_four_fields(monkeypatch):
         "reserve_soc": 33,
         "export_mode": "solar_only",
         "export_limit_kw": 5.0,
+        "mode_source": "cloud",
+        "available_modes": None,
     }

@@ -18,7 +18,8 @@ HACS → Integrations → ⋮ → Custom repositories → add `https://github.co
 |---|---|---|---|
 | Live telemetry | 30 s, ~60 ms latency, no internet needed | 5 min, rate limited | Modbus |
 | Energy totals (Energy dashboard) | — | yes | Cloud |
-| Mode / export control | — | yes | Cloud |
+| Operating mode control | — | yes | **Local**, cloud fallback |
+| Export / reserve control | — | yes | Cloud |
 | Needs | aGate IP, Modbus enabled | account + gateway ID | both |
 
 **Modbus:** in the FranklinWH app enable the **SPAN panel** toggle — it turns on the Modbus TCP listener on port 502; no SPAN hardware needed. If the toggle isn't offered on your firmware, use Cloud.
@@ -36,6 +37,17 @@ Circuit 3 is the one FranklinWH wires for V2L, and the gateway reports it as the
 **Two gateways on one account:** add each gateway as its own entry and give the second one a different entity name prefix in the cloud step. The login is shared across entries; a fresh login invalidates the previous token, so independent logins per gateway would loop on 401s.
 
 Grid and battery power are signed 16-bit registers on the aGate, so anything above 32.767 kW wraps; the integration resolves that against the energy balance.
+
+## Local mode control
+
+In **Local + Cloud**, the operating mode is read and changed directly on the aGate, over the same LAN connection the FranklinWH app uses in Direct Connection mode (TCP port 9000). The cloud is only the fallback, so mode changes keep working when the FranklinWH login is down.
+
+- A mode change selects the aGate's own programme for that mode, so each mode keeps the reserve you set in the app.
+- It is only reported as done once a fresh read from the aGate shows the new mode. The `Operating Mode` entity's `mode_source` attribute says `local` or `cloud`.
+- `available_modes` lists the modes your aGate actually has. Choosing one it lacks fails with an explanation instead of writing anything.
+- Export mode, export limit and reserve changes have no local path and still use the cloud.
+
+This port has no authentication on the aGate: anything on your LAN that can reach it can do the same. That is how the hardware ships, and worth knowing when you decide which network the aGate lives on.
 
 ## Troubleshooting
 
@@ -56,4 +68,4 @@ The client under `api/` is synced by diffing against the upstream commit noted i
 
 ## Credits and license
 
-Original integration and client library by [@richo](https://github.com/richo); Modbus register map validated against [mtnears/FranklinWH-Automation](https://github.com/mtnears/FranklinWH-Automation); TOU profile work by [@cd34](https://github.com/cd34) and [@npdsomerhayes](https://github.com/npdsomerhayes). Dual-licensed MIT / Apache-2.0; the vendored client is MIT.
+Original integration and client library by [@richo](https://github.com/richo); Modbus register map validated against [mtnears/FranklinWH-Automation](https://github.com/mtnears/FranklinWH-Automation), whose v4.7 also showed local mode switching with read-back confirmation; local protocol reverse-engineered by [@david2069](https://github.com/david2069/franklinwh-local), seed formula by [@voidstarr](https://github.com/voidstarr/franklinwh_local); TOU profile work by [@cd34](https://github.com/cd34) and [@npdsomerhayes](https://github.com/npdsomerhayes). Dual-licensed MIT / Apache-2.0; the vendored client is MIT.

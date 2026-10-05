@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026.12.0
+- Local + Cloud: the operating mode is now read and changed on the aGate itself (TCP 9000), with the cloud as fallback. Mode changes no longer need the FranklinWH login, which was returning errors from 2026-10-03.
+- A local change selects the gateway's own programme, so reserves are untouched, and is confirmed by a fresh read before it is reported.
+- `Operating Mode` gains `mode_source` and `available_modes` attributes. Selecting a mode the gateway has no programme for is refused with an explanation.
+- A cloud outage no longer takes the mode select offline when the local read works.
+
 ## 2026.11.0
 - Two gateways on one account no longer log each other out: one login is shared per account, and a client adopts the newer token instead of re-logging in. Fixes the 401 loop behind richo/homeassistant-franklinwh#87 and the two-battery instability in #78.
 - Circuit 3 gets `Switch 3 Load` and `Switch 3 Lifetime Use`. The gateway reports it as the car/V2L switch, so these carry the same values as `V2L Use` and `V2L Export`. richo/homeassistant-franklinwh#83.

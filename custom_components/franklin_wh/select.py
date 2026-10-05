@@ -13,6 +13,7 @@ from homeassistant.components.select import (
     SelectEntity,
 )
 from homeassistant.const import (
+    CONF_HOST,
     CONF_ID,
     CONF_PASSWORD,
     CONF_USERNAME,
@@ -22,6 +23,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 
 from . import describe_exception, entry_prefix
+from .local import LocalGateway, LocalGatewayError, active_mode, available_modes
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
@@ -241,9 +243,10 @@ async def async_setup_entry(
     """Set up cloud-backed selects from a config entry.
 
     __init__.py forwards SELECT only for connection_type "cloud" and "both",
-    so reaching here always means cloud credentials are present. In "both"
-    mode telemetry comes from Modbus and only these writable controls use the
-    cloud, which is the intended hybrid split.
+    so reaching here always means cloud credentials are present. When the
+    entry also has the aGate's address ("both"), the operating mode is read
+    and changed over the local connection first and the cloud is the fallback;
+    export settings have no local write path and stay on the cloud.
     """
     await _async_add_selects(
         hass,
@@ -257,29 +260,60 @@ async def async_setup_entry(
         # instead of silently unique_id-less.
         entry.data.get("serial") or entry.data.get("gateway_id") or None,
         timedelta(seconds=DEFAULT_UPDATE_INTERVAL),
+        local_host=entry.data.get(CONF_HOST) or None,
     )
 
 
-async def _read_mode_and_export(client) -> dict:
+async def _read_mode_and_export(client, local=None, previous: dict | None = None) -> dict:
     """Read mode, reserve SOC and export settings for the coordinator.
 
     Module level so the error handling is testable; it used to be a closure.
+
+    With a local connection the operating mode comes from the aGate itself and
+    the cloud is only asked for the export settings. If the cloud is down in
+    that case the mode is still good, so the last known export settings are
+    kept (`previous`) rather than taking the mode select offline with them.
     """
+    operating_mode = reserve_soc = None
+    modes_available: list[str] | None = None
+    mode_source = "cloud"
+    if local is not None:
+        try:
+            modes = await local.mode_list()
+        except LocalGatewayError as err:
+            _LOGGER.debug("Local mode read failed (%s) - using the cloud", err)
+        else:
+            operating_mode, reserve_soc = active_mode(modes)
+            if operating_mode is not None:
+                mode_source = "local"
+                modes_available = available_modes(modes)
+
     try:
-        operating_mode, reserve_soc = await _read_operating_mode(client)
+        if mode_source == "cloud":
+            operating_mode, reserve_soc = await _read_operating_mode(client)
         export_mode, export_limit_kw = await _read_export_settings(client)
     except Exception as err:
-        # Name the type: franklinwh raises bare exceptions such as
-        # InvalidDataException() whose str() is empty, which produced the
-        # contentless "Error fetching FranklinWH mode/export status:" in #82.
-        raise UpdateFailed(
-            f"Error fetching FranklinWH mode/export status: {describe_exception(err)}"
-        ) from err
+        if mode_source == "cloud":
+            # Name the type: franklinwh raises bare exceptions such as
+            # InvalidDataException() whose str() is empty, which produced the
+            # contentless "Error fetching FranklinWH mode/export status:" in #82.
+            raise UpdateFailed(
+                f"Error fetching FranklinWH mode/export status: {describe_exception(err)}"
+            ) from err
+        _LOGGER.debug(
+            "Cloud export read failed (%s); mode came from the local connection, "
+            "keeping the last known export settings",
+            describe_exception(err),
+        )
+        export_mode = (previous or {}).get("export_mode")
+        export_limit_kw = (previous or {}).get("export_limit_kw")
     return {
         "operating_mode": operating_mode,
         "reserve_soc": reserve_soc,
         "export_mode": export_mode,
         "export_limit_kw": export_limit_kw,
+        "mode_source": mode_source,
+        "available_modes": modes_available,
     }
 
 
@@ -292,6 +326,7 @@ async def _async_add_selects(
     prefix: str,
     unique_id: str | None,
     update_interval: timedelta,
+    local_host: str | None = None,
 ) -> None:
     """Build the cloud client, coordinator and select entities.
 
@@ -300,9 +335,10 @@ async def _async_add_selects(
     from . import get_shared_client  # noqa: PLC0415
 
     client = await get_shared_client(hass, username, password, gateway)
+    local = LocalGateway(local_host) if local_host else None
 
     async def _update_data() -> dict:
-        return await _read_mode_and_export(client)
+        return await _read_mode_and_export(client, local, coordinator.data)
 
     coordinator = DataUpdateCoordinator[dict](
         hass,
@@ -317,7 +353,7 @@ async def _async_add_selects(
 
     async_add_entities(
         [
-            OperatingModeSelect(coordinator, prefix, unique_id, client),
+            OperatingModeSelect(coordinator, prefix, unique_id, client, local),
             ExportModeSelect(coordinator, prefix, unique_id, client),
         ]
     )
@@ -363,8 +399,9 @@ class OperatingModeSelect(FranklinSelectBase):
     """
 
     _attr_options = OPERATING_MODES
+    _local = None  # LocalGateway when the entry knows the aGate's address
 
-    def __init__(self, coordinator, prefix, unique_id, client) -> None:
+    def __init__(self, coordinator, prefix, unique_id, client, local=None) -> None:
         """Initializer."""
         super().__init__(
             coordinator,
@@ -374,6 +411,16 @@ class OperatingModeSelect(FranklinSelectBase):
             "Operating Mode",
             "_operating_mode",
         )
+        self._local = local
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        """Say which connection the mode came from and what the gateway offers."""
+        data = self.coordinator.data or {}
+        attrs = {"mode_source": data.get("mode_source", "cloud")}
+        if data.get("available_modes") is not None:
+            attrs["available_modes"] = data["available_modes"]
+        return attrs
 
     @property
     def current_option(self) -> str | None:
@@ -397,6 +444,33 @@ class OperatingModeSelect(FranklinSelectBase):
         if option == self.current_option:
             _LOGGER.debug("Operating mode already %s — not writing", option)
             return
+
+        if self._local is not None:
+            # Local first: it selects the gateway's own programme for the mode
+            # (so that mode's reserve is untouched by construction), needs no
+            # cloud login, and only returns once a fresh read confirms it.
+            try:
+                await self._local.set_mode(option)
+            except LocalGatewayError as err:
+                if err.stage == "unsupported":
+                    raise HomeAssistantError(
+                        f"Cannot switch to {option}: this aGate has no programme "
+                        "for that mode. Add it in the FranklinWH app first."
+                    ) from err
+                _LOGGER.warning(
+                    "Local mode change to %s failed (%s) - trying the cloud",
+                    option, err,
+                )
+            else:
+                _LOGGER.info(
+                    "Operating mode changed to %s over the local connection", option
+                )
+                if self.coordinator.data is not None:
+                    self.coordinator.data["operating_mode"] = option
+                    self.coordinator.data["mode_source"] = "local"
+                self.async_write_ha_state()
+                await self.coordinator.async_request_refresh()
+                return
 
         soc = await _read_reserve_for_mode(self._client, option)
         if soc is None:
